@@ -151,6 +151,6 @@ def merge_person_mentions(transcript_id: str, mentions: list[Mention]) -> tuple[
             mentions=sorted(group, key=lambda m: m.start),
         )
         if any(m in ambiguous for m in group):
-            e.flag("short name matches multiple long names")
+            e.flag_entity("short name matches multiple long names")
         entities.append(e)
     return entities, ambiguous
