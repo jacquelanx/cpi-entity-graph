@@ -49,7 +49,7 @@ def apply_coref(transcript: str, person_entities: list[Entity]) -> tuple[list[En
         if len(touched) < 2:  # nothing to merge
             continue
 
-        # Merge! Only when their surface forms don't contradict (no surname conflict)
+        # Merge! For now do a basic check (2 completely diff names aren't merged)
         base = touched[0]  # suppose base = Entity A; everything will be merged into A
         for other in touched[1:]:
             base_tokens = {t for f in base.sorted_mentions for t in f.lower().split()}
