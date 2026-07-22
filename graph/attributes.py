@@ -11,14 +11,39 @@ from .merge_strings import KINSHIP_AND_TITLES
 
 
 # Names that should usually NOT be replaced (public figures give no PII about
-# the interviewee); HARDCODED
-PUBLIC_FIGURES = {"obama", "barack obama", "trump", "biden", "beyonce", "mlk"}
+# the interviewee). Prefer full names / distinctive surnames over common names to
+# avoid colliding with a private individual who shares the name.
+PUBLIC_FIGURES = {
+    # politicians / historical
+    "obama", "barack obama", "michelle obama", "biden", "joe biden",
+    "trump", "donald trump", "hillary clinton", "bill clinton",
+    "george bush", "reagan", "nixon", "jfk", "kennedy",
+    "mlk", "martin luther king", "malcolm x", "mandela", "nelson mandela",
+    "putin", "gandhi",
+    # entertainers
+    "beyonce", "jay-z", "oprah", "oprah winfrey", "kanye", "drake",
+    "rihanna", "madonna", "elvis", "michael jackson", "taylor swift",
+    "kim kardashian",
+    # athletes
+    "lebron", "lebron james", "michael jordan", "kobe", "kobe bryant",
+    "serena williams", "tom brady", "muhammad ali",
+}
+
+
+# Possessive / relational framing just before a name ("my Michelle", "our
+# James") signals a PRIVATE individual, even if the name matches a public
+# figure. Small trailing window before the mention.
+_OWNED_BEFORE = re.compile(r"\b(my|our|his|her|their)\s+(?:\w+\s+){0,2}$", re.I)
 
 
 PROFESSIONAL_CONTEXT = re.compile(
-    r"\b(my|our|the)\s+(caseworker|case worker|doctor|nurse|therapist|"
-    r"counselor|teacher|professor|boss|manager|landlord|lawyer|attorney|"
-    r"pastor|social worker|parole officer|po)\b", re.I)
+    r"\b(my|our|the)\s+(caseworker|case worker|social worker|doctor|dr\.?|"
+    r"nurse|therapist|counselor|counsellor|psychiatrist|psychologist|"
+    r"physician|surgeon|pediatrician|dentist|midwife|teacher|professor|"
+    r"instructor|tutor|advisor|adviser|mentor|principal|dean|coach|boss|"
+    r"manager|supervisor|landlord|lawyer|attorney|pastor|priest|rabbi|imam|"
+    r"chaplain|parole officer|probation officer|po|sponsor|babysitter|"
+    r"nanny|caregiver)\b", re.I)
 
 
 """
@@ -56,9 +81,21 @@ def infer_person_attributes(
         forms_lower = {f.lower() for f in ent.sorted_mentions}  # lowercase everything
 
         if forms_lower & PUBLIC_FIGURES:
-            ent.subtype = "PUBLIC_FIGURE"
-            attrs["replace"] = False        # public figures usually stay
-            continue
+            # if interviewee frames this name possessively ("my Michelle"), 
+            # it's a private person who happens to share the name so we DON'T
+            # replace it
+            owned = any(
+                _OWNED_BEFORE.search(transcript[max(0, m.start - 40):m.start])
+                for m in ent.mentions
+            )
+            if not owned:
+                ent.subtype = "PUBLIC_FIGURE"
+                attrs["replace"] = False    # public figures usually stay
+                continue
+            ent.flag_entity(
+                "name matches a public figure but is used possessively; "
+                "treated as private"
+            )
 
         if ent.entity_id in kin_targets or ent.entity_id in kin_sources:
             ent.subtype = ent.subtype or "FAMILY"
