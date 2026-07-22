@@ -22,7 +22,7 @@ import csv
 import re
 from pathlib import Path
 from dateutil import parser as dateparser
-from .models import Edge, Entity
+from .models import Edge, Entity, Relation
 
 
 """
@@ -83,7 +83,7 @@ def build_location_edges(
                 Edge(
                     source=e.entity_id,
                     target=by_name[rec["parent"]].entity_id,
-                    relation="LOCATED_IN",
+                    relation=Relation.LOCATED_IN,
                     detail=f"{rec['type']} in {gazetteer[rec['parent']]['type']}",
                     evidence="gazetteer",
                 )
@@ -143,7 +143,7 @@ def resolve_date_entity(entity: Entity, interview_date) -> None:
                 entity.mentions[0].text, fuzzy=True
             ).date().isoformat()
         except (ValueError, OverflowError):
-            entity.flag("absolute date failed to parse")
+            entity.flag_entity("absolute date failed to parse")
         return
 
     if entity.category == "DATE_ANCHOR":
@@ -153,12 +153,12 @@ def resolve_date_entity(entity: Entity, interview_date) -> None:
                 attrs["resolved_value"] = iso
                 attrs["anchor_event"] = phrase
                 return
-        entity.flag("anchor phrase not in ANCHOR_EVENTS table - add it")
+        entity.flag_entity("anchor phrase not in ANCHOR_EVENTS table - add it")
         return
 
     if entity.category == "DATE_RELATIVE":
         if interview_date is None:
-            entity.flag("relative date but no interview_date in metadata")
+            entity.flag_entity("relative date but no interview_date in metadata")
             return
         attrs["approximate"] = True
         m = _REL_AGO.search(text)
@@ -179,7 +179,7 @@ def resolve_date_entity(entity: Entity, interview_date) -> None:
                 candidate = dateparser.parse(f"{year - 1}-{season_md}").date()
             attrs["resolved_value"] = candidate.isoformat()
             return
-        entity.flag("relative date pattern not recognized")
+        entity.flag_entity("relative date pattern not recognized")
 
 
 """
@@ -215,7 +215,7 @@ def resolve_age_entity(entity: Entity) -> None:
     if found:
         entity.attributes["value"] = total
     else:
-        entity.flag("could not parse age value")
+        entity.flag_entity("could not parse age value")
 
 
 """
@@ -254,7 +254,7 @@ def age_date_constraints(
                         s, e = sentences[s_idx]
                         edges.append(Edge(
                             source=a.entity_id, target=d.entity_id,
-                            relation="STATED_WITH",
+                            relation=Relation.STATED_WITH,
                             detail="age and date co-stated; keep arithmetic",
                             evidence=transcript[s:e].strip(),
                         ))

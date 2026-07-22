@@ -9,7 +9,7 @@ Entity E1 (Maria, "she", "my aunt") but we need to mark relations between them.
 
 from __future__ import annotations
 import re
-from .models import Edge, Entity
+from .models import Edge, Entity, Relation
 
 
 # kinship word: gender it implies for the TARGET person, or None
@@ -85,7 +85,7 @@ def extract_kinship(
             Edge(
                 source=interviewee.entity_id,
                 target=target.entity_id,
-                relation="RELATED_TO",
+                relation=Relation.RELATED_TO,
                 detail=kin_word,
                 evidence=match.group(0),
             )
@@ -106,7 +106,7 @@ def extract_kinship(
             Edge(
                 source=anchor.entity_id,
                 target=target.entity_id,
-                relation="RELATED_TO",
+                relation=Relation.RELATED_TO,
                 detail=kin_word,
                 evidence=match.group(0),
             )

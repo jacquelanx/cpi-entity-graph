@@ -94,7 +94,8 @@ class Edge:
         return {
             "source": self.source,
             "target": self.target,
-            "relation": self.relation,
+            # serialize enum to its string value; tolerate a bare string too
+            "relation": self.relation.value if isinstance(self.relation, Relation) else self.relation,
             "detail": self.detail,
             "evidence": self.evidence,
         }
