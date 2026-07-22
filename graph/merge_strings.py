@@ -64,6 +64,26 @@ NICKNAMES = {
 }
 
 
+# Honorific titles (subset of the strip-set above). Unlike kinship prefixes,
+# an honorific marks social distance, so a titled form + a bare form that share
+# only one given name ("Miss Rosa" vs "Rosa") can be different people.
+HONORIFIC_TITLES = {
+    "mr", "mrs", "ms", "miss", "mx", "dr", "prof", "professor", "sir",
+    "madam", "maam", "ma'am", "rev", "reverend", "pastor", "captain", "capt",
+    "sergeant", "sgt", "officer", "judge", "senator", "governor", "gov",
+    "mayor", "president", "pres", "coach", "principal",
+}
+
+
+"""The honorific title leading a mention ('Miss Rosa' -> 'miss'), else ''."""
+def _honorific(text: str) -> str:
+    for raw in re.split(r"[\s,]+", text):
+        t = raw.strip("'\".()-").lower()
+        if t in HONORIFIC_TITLES:
+            return t
+    return ""
+
+
 # "H-A-Y-E-S", "H A Y E S", "H.A.Y.E.S" --> collapse into the word "hayes"
 _SPELLOUT = re.compile(r"^(?:[A-Za-z][\s\-\.]){2,}[A-Za-z]\.?$")
 
@@ -132,17 +152,31 @@ def merge_person_mentions(transcript_id: str, mentions: list[Mention]) -> tuple[
         return [], []
 
     norm = [normalize(m.text) for m in persons]  # eg. ("sarah", "hayes")
-    canon = [tuple(canonical_token(t) for t in toks) for toks in norm]  
+    canon = [tuple(canonical_token(t) for t in toks) for toks in norm]
     # eg. canon = [("maria",), ("maria",), ("maria","rodriguez")]
+    honor = [_honorific(m.text) for m in persons]  # "" unless a title leads it
     uf = _UnionFind(len(persons))  # just initialize, not merged yet
 
-    # exact normalized/canonical match
+    # Exact normalized/canonical match. For a distinctive (multi-token) name we
+    # merge on the name alone. For a BARE given name we additionally key on the
+    # honorific, so "Miss Rosa" and "Rosa" land in DIFFERENT groups instead of
+    # silently over-merging two people who share a first name. Bare "Aunt Maria"
+    # and "Maria" still merge (kinship prefix carries no honorific).
     seen: dict[tuple, int] = {}
+    honorifics_by_key: dict[tuple, set[str]] = {}  # canon key -> honorifics seen
     for i, key in enumerate(canon):  # eg. 0: ("maria",), 1: ("maria",)
-        if key in seen:
-            uf.union(i, seen[key])
+        if len(key) == 1:
+            honorifics_by_key.setdefault(key, set()).add(honor[i])
+            merge_key = (key, honor[i])
         else:
-            seen[key] = i
+            merge_key = (key, "")
+        if merge_key in seen:
+            uf.union(i, seen[merge_key])
+        else:
+            seen[merge_key] = i
+
+    # bare-name keys seen with >1 distinct honorific profile = a likely collision
+    collision_keys = {k for k, hs in honorifics_by_key.items() if len(hs) > 1}
 
     # now single-token forms merge into multi-token forms that
     # contain them but only if exactly ONE candidate group exists
@@ -163,15 +197,17 @@ def merge_person_mentions(transcript_id: str, mentions: list[Mention]) -> tuple[
         elif len(candidates) > 1:
             ambiguous.append(persons[i])
 
-    # use the union-find groups to create Entity objects
-    groups: dict[int, list[Mention]] = {}
-    for i, m in enumerate(persons):
-        groups.setdefault(uf.find(i), []).append(m)
+    # use the union-find groups to create Entity objects (track member indices
+    # so we can look up each group's canon keys for collision flagging)
+    groups: dict[int, list[int]] = {}
+    for i in range(len(persons)):
+        groups.setdefault(uf.find(i), []).append(i)
 
     entities = []
-    for n, (_, group) in enumerate(
-        sorted(groups.items(), key=lambda kv: min(m.start for m in kv[1]))
+    for n, (_, idxs) in enumerate(
+        sorted(groups.items(), key=lambda kv: min(persons[i].start for i in kv[1]))
     ):
+        group = [persons[i] for i in idxs]
         e = Entity(
             entity_id=f"{transcript_id}_e{n + 1:03d}",
             category="PERSON",
@@ -179,5 +215,10 @@ def merge_person_mentions(transcript_id: str, mentions: list[Mention]) -> tuple[
         )
         if any(m in ambiguous for m in group):
             e.flag_entity("short name matches multiple long names")
+        # this bare name also appears with a different honorific elsewhere
+        # (e.g. "Rosa" here vs "Miss Rosa"): possibly a different person
+        if any(canon[i] in collision_keys for i in idxs):
+            e.flag_entity("bare given name also appears with a title elsewhere; "
+                          "possible distinct people")
         entities.append(e)
     return entities, ambiguous

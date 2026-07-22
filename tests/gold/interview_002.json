@@ -1,0 +1,38 @@
+{
+  "transcript_id": "interview_002",
+  "interview_date": "2021-09-10",
+  "people": [
+    {"canonical": "Hector", "forms": ["Hector"], "gender": "M", "replace": true},
+    {"canonical": "Lucia", "forms": ["Lucia"], "gender": "F", "replace": true},
+    {"canonical": "Roberto", "forms": ["Roberto", "Beto"], "gender": "M", "replace": true, "note": "Beto not in table -> expected split"},
+    {"canonical": "Elena", "forms": ["Elena"], "gender": "F", "replace": true},
+    {"canonical": "Obama", "forms": ["Obama"], "gender": null, "replace": false, "note": "public; 'my dad admired Obama' may over-fire the possessive guard"},
+    {"canonical": "Beyonce", "forms": ["Beyonce"], "gender": null, "replace": false, "note": "public, no possessive framing -> should be kept"},
+    {"canonical": "Mr. Kim", "forms": ["Mr. Kim"], "gender": "M", "replace": true, "subtype": "PROFESSIONAL"},
+    {"canonical": "Grace", "forms": ["Grace"], "gender": "F", "replace": true},
+    {"canonical": "Camila", "forms": ["Camila"], "gender": "F", "replace": true}
+  ],
+  "relations": [
+    {"source": "INTERVIEWEE", "target": "Hector", "detail": "father"},
+    {"source": "INTERVIEWEE", "target": "Lucia", "detail": "mother"},
+    {"source": "INTERVIEWEE", "target": "Roberto", "detail": "brother"},
+    {"source": "Roberto", "target": "Elena", "detail": "wife"},
+    {"source": "INTERVIEWEE", "target": "Camila", "detail": "niece"},
+    {"source": "Elena", "target": "Camila", "detail": "daughter"}
+  ],
+  "dates": [
+    {"text": "March 3, 2003", "category": "DATE_ABSOLUTE", "resolved": "2003-03-03", "tolerance_days": 2},
+    {"text": "the pandemic", "category": "DATE_ANCHOR", "resolved": "2020-03-01", "tolerance_days": 0},
+    {"text": "a few years ago", "category": "DATE_RELATIVE", "resolved": "2018-09-11", "tolerance_days": 5},
+    {"text": "back when I was a teenager", "category": "DATE_RELATIVE", "expect_flag": true}
+  ],
+  "ages": [
+    {"text": "twenty-five", "value": 25, "tolerance": 0},
+    {"text": "her sixties", "value": 65, "tolerance": 5},
+    {"text": "twelve", "value": 12, "tolerance": 0}
+  ],
+  "locations": [
+    {"text": "Los Angeles", "in_gazetteer": false},
+    {"text": "Chicago", "in_gazetteer": false}
+  ]
+}

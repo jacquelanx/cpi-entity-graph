@@ -1,0 +1,51 @@
+{
+  "transcript_id": "interview_001",
+  "interview_date": "2022-05-01",
+  "people": [
+    {"canonical": "Gloria", "forms": ["Gloria", "Glo"], "gender": "F", "replace": true, "note": "mom; nickname Glo not in table -> expected merge miss"},
+    {"canonical": "Maria", "forms": ["Maria"], "gender": "F", "replace": true},
+    {"canonical": "Ronnie", "forms": ["Ronnie"], "gender": "M", "replace": true},
+    {"canonical": "Miss Rosa", "forms": ["Miss Rosa"], "gender": "F", "replace": true, "note": "neighbor; shares first name with Carla's mom -> over-merge trap"},
+    {"canonical": "Tank", "forms": ["Tank", "Terrence"], "gender": "M", "replace": true, "note": "alias not in nickname table -> expected split"},
+    {"canonical": "Denise", "forms": ["Denise"], "gender": null, "replace": true},
+    {"canonical": "Mr. Alvarez", "forms": ["Mr. Alvarez"], "gender": "M", "replace": true, "subtype": "PROFESSIONAL"},
+    {"canonical": "Ms. Patterson", "forms": ["Ms. Patterson"], "gender": "F", "replace": true, "subtype": "PROFESSIONAL"},
+    {"canonical": "Beyonce", "forms": ["Beyonce"], "gender": "F", "replace": true, "note": "private person sharing a celebrity name -> must still be replaced"},
+    {"canonical": "Landrieu", "forms": ["Mayor Landrieu"], "gender": null, "replace": false, "note": "real public figure NOT in our list -> expected over-redaction"},
+    {"canonical": "Carla", "forms": ["Carla"], "gender": "F", "replace": true},
+    {"canonical": "Sofia", "forms": ["Sofia"], "gender": "F", "replace": true},
+    {"canonical": "Junior", "forms": ["Junior"], "gender": "M", "replace": true, "note": "son; relation phrased out-of-pattern -> expected relation miss"},
+    {"canonical": "Marcus", "forms": ["Marcus"], "gender": "M", "replace": true},
+    {"canonical": "Rosa", "forms": ["Rosa"], "gender": "F", "replace": true, "note": "Carla's mom"}
+  ],
+  "relations": [
+    {"source": "INTERVIEWEE", "target": "Gloria", "detail": "mother", "note": "non-adjacent -> expected miss"},
+    {"source": "INTERVIEWEE", "target": "Maria", "detail": "aunt"},
+    {"source": "Maria", "target": "Ronnie", "detail": "husband"},
+    {"source": "INTERVIEWEE", "target": "Denise", "detail": "cousin"},
+    {"source": "INTERVIEWEE", "target": "Carla", "detail": "wife"},
+    {"source": "Carla", "target": "Rosa", "detail": "mom"},
+    {"source": "INTERVIEWEE", "target": "Sofia", "detail": "daughter"},
+    {"source": "INTERVIEWEE", "target": "Junior", "detail": "son", "note": "out-of-pattern -> expected miss"},
+    {"source": "INTERVIEWEE", "target": "Marcus", "detail": "brother"}
+  ],
+  "dates": [
+    {"text": "March 1990", "category": "DATE_ABSOLUTE", "resolved": "1990-03-01", "tolerance_days": 40},
+    {"text": "Hurricane Katrina", "category": "DATE_ANCHOR", "resolved": "2005-08-29", "tolerance_days": 0},
+    {"text": "a few years back", "category": "DATE_RELATIVE", "expect_flag": true, "note": "'back' not 'ago' -> expected miss"},
+    {"text": "the year Obama got elected", "category": "DATE_ANCHOR", "resolved": "2008-11-04", "tolerance_days": 0}
+  ],
+  "ages": [
+    {"text": "nineteen", "value": 19, "tolerance": 0},
+    {"text": "early thirties", "value": 32, "tolerance": 5},
+    {"text": "eight", "value": 8, "tolerance": 0},
+    {"text": "three", "value": 3, "tolerance": 0}
+  ],
+  "locations": [
+    {"text": "New Orleans", "in_gazetteer": true},
+    {"text": "Ninth Ward", "in_gazetteer": true},
+    {"text": "Charity Hospital", "in_gazetteer": true},
+    {"text": "Houston", "in_gazetteer": false},
+    {"text": "Baton Rouge", "in_gazetteer": false}
+  ]
+}

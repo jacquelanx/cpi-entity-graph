@@ -1,0 +1,36 @@
+{
+  "transcript_id": "interview_003",
+  "interview_date": "2020-11-11",
+  "people": [
+    {"canonical": "William", "forms": ["William", "Will"], "gender": "M", "replace": true, "note": "Will not in table -> expected split"},
+    {"canonical": "Ruth", "forms": ["Ruth"], "gender": "F", "replace": true, "note": "grandmother; relation non-adjacent -> expected miss"},
+    {"canonical": "Marcus", "forms": ["Marcus"], "gender": "M", "replace": true, "note": "buddy, not kin -> no relation"},
+    {"canonical": "Ellis", "forms": ["Ellis"], "gender": "M", "replace": true},
+    {"canonical": "Malcolm X", "forms": ["Malcolm X"], "gender": null, "replace": false, "note": "public, should be kept"},
+    {"canonical": "Sarah", "forms": ["Sarah"], "gender": "F", "replace": true},
+    {"canonical": "Danny", "forms": ["Danny"], "gender": "M", "replace": true},
+    {"canonical": "Ruthie", "forms": ["Ruthie"], "gender": "F", "replace": true, "note": "daughter; 'named after my grandmother, Ruthie' should FALSELY yield a grandmother edge -> precision/detail trap"}
+  ],
+  "relations": [
+    {"source": "INTERVIEWEE", "target": "William", "detail": "grandfather"},
+    {"source": "INTERVIEWEE", "target": "Ruth", "detail": "grandmother", "note": "non-adjacent -> expected miss"},
+    {"source": "INTERVIEWEE", "target": "Sarah", "detail": "wife"},
+    {"source": "Sarah", "target": "Danny", "detail": "brother"},
+    {"source": "INTERVIEWEE", "target": "Ruthie", "detail": "daughter", "note": "true rel is daughter; pipeline likely labels it grandmother"}
+  ],
+  "dates": [
+    {"text": "September 2008", "category": "DATE_ABSOLUTE", "resolved": "2008-09-01", "tolerance_days": 40},
+    {"text": "9/11", "category": "DATE_ANCHOR", "resolved": "2001-09-11", "tolerance_days": 0},
+    {"text": "two years ago", "category": "DATE_RELATIVE", "resolved": "2018-11-11", "tolerance_days": 3},
+    {"text": "Last spring", "category": "DATE_RELATIVE", "resolved": "2020-03-20", "tolerance_days": 20}
+  ],
+  "ages": [
+    {"text": "eighteen", "value": 18, "tolerance": 0},
+    {"text": "mid-forties", "value": 45, "tolerance": 5}
+  ],
+  "locations": [
+    {"text": "Ninth Ward", "in_gazetteer": true},
+    {"text": "New Orleans", "in_gazetteer": true},
+    {"text": "Fort Bragg", "in_gazetteer": false}
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "transcript_id": "interview_004",
+  "interview_date": "2023-02-20",
+  "people": [
+    {"canonical": "Diane", "forms": ["Diane"], "gender": "F", "replace": true},
+    {"canonical": "Kayla", "forms": ["Kayla"], "gender": "F", "replace": true},
+    {"canonical": "Elijah", "forms": ["Elijah"], "gender": "M", "replace": true},
+    {"canonical": "Chip", "forms": ["Chip"], "gender": "M", "replace": true, "note": "brother; out-of-pattern -> expected relation miss"},
+    {"canonical": "Dana", "forms": ["Dana"], "gender": null, "replace": true, "subtype": "PROFESSIONAL"},
+    {"canonical": "Dr. Nguyen", "forms": ["Dr. Nguyen"], "gender": null, "replace": true, "subtype": "PROFESSIONAL"},
+    {"canonical": "Ray", "forms": ["Ray"], "gender": "M", "replace": true, "subtype": "PROFESSIONAL", "note": "gender only from pronoun -> expected gender miss"},
+    {"canonical": "Miss Bea", "forms": ["Miss Bea"], "gender": "F", "replace": true, "note": "guardian, not stated kin -> no relation; gender only from pronoun"},
+    {"canonical": "Oprah", "forms": ["Oprah"], "gender": null, "replace": false, "note": "public, should be kept"}
+  ],
+  "relations": [
+    {"source": "INTERVIEWEE", "target": "Diane", "detail": "mother"},
+    {"source": "INTERVIEWEE", "target": "Kayla", "detail": "sister"},
+    {"source": "Kayla", "target": "Elijah", "detail": "son"},
+    {"source": "INTERVIEWEE", "target": "Chip", "detail": "brother", "note": "out-of-pattern -> expected miss"}
+  ],
+  "dates": [
+    {"text": "Three years ago", "category": "DATE_RELATIVE", "resolved": "2020-02-20", "tolerance_days": 3},
+    {"text": "COVID", "category": "DATE_ANCHOR", "resolved": "2020-03-01", "tolerance_days": 0},
+    {"text": "since I was a kid", "category": "DATE_RELATIVE", "expect_flag": true}
+  ],
+  "ages": [
+    {"text": "twenty-two", "value": 22, "tolerance": 0},
+    {"text": "late fifties", "value": 57, "tolerance": 5},
+    {"text": "ten", "value": 10, "tolerance": 0}
+  ],
+  "locations": [
+    {"text": "Baton Rouge", "in_gazetteer": false},
+    {"text": "New Orleans", "in_gazetteer": true}
+  ]
+}
