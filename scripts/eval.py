@@ -2,10 +2,6 @@
 Evaluation script for the knowledge graph part ONLY. The knowledge graph consumes
 detected spans from the detection stage; this file simulates a perfect detector and
 runs those spans through the knowledge graph pipeline.
-
-The full pipeline is run, INCLUDING the fastcoref coreference stage
-(merge_person_mentions -> apply_coref -> extract_kinship -> attributes). Set the
-env var EVAL_NO_COREF=1 to skip coref for a faster run.
 """
 
 from __future__ import annotations
@@ -25,7 +21,6 @@ os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
 from dateutil import parser as dateparser
-
 from graph.loader import resolve_overlaps, make_mentions
 from graph.merge_strings import merge_person_mentions
 from graph.coref import apply_coref
@@ -38,8 +33,9 @@ from graph.models import Entity, Mention, Relation
 
 RUN_COREF = os.environ.get("EVAL_NO_COREF") != "1"
 
-ROOT = Path(__file__).resolve().parent
-DATA_GAZ = ROOT.parent / "data" / "gazetteer.csv"
+REPO = Path(__file__).resolve().parent.parent
+ROOT = REPO / "tests"                       # transcripts + gold live here
+DATA_GAZ = REPO / "data" / "gazetteer.csv"
 
 # kin-word synonyms -> canonical family term, for scoring relation "detail"
 _KIN_CANON = {}
