@@ -15,6 +15,8 @@ so they can be maintained during surrogate generation, keeps track of dates and 
 and location hierarchies (again, so surrogate generation is consistent later), and infer
 attributes (gender, people's profession). All of this is so that we are able to easily
 do consistent, accurate surrogate generation later. 
+
+
 **If you want to look at the output of this stage, run this command to see a HTML report:** 
 `./venv/bin/python3 scripts/dashboard.py`--it opens an HTML report walking through every stage 
 on 5 sample transcripts I generated, with precision/recall/accuracy numbers per transcript.
@@ -23,6 +25,8 @@ these 5 transcripts to test detector outputs.
 NOTE: disregard what's in `tests/gold/`!! Those json files are for my reference only and are
 NOT the output that the entity graph ingests. See the next bullet point for the actual format
 that this codebase ingests currently.
+
+
 **IMPORTANT: the output format from the detection stage.** One JSON file per transcript,
 exactly in this format:
 
@@ -46,6 +50,7 @@ Where "entity_type" can only be from the categories we defined, restated here:
 "PERSON", "NICKNAME", "LOCATION", "DATE_ABSOLUTE", "DATE_RELATIVE", "DATE_ANCHOR",
 "AGE", "PHONE", "EMAIL", "SSN_OR_ID", "USERNAME_HANDLE", "DATE_OF_BIRTH", "INSTITUTION", 
 "OCCUPATION".
+
 
 Also note: **`start`/`end` are character offsets into the raw `.txt`, 0-indexed and 
 end-exclusive** — i.e. `transcript[start:end]` has to equal `text` character-for-character. 
