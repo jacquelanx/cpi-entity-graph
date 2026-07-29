@@ -1,8 +1,7 @@
 """
-Part 1 of Clustering: merges PERSON/NICKNAME. The following rules are applied:
+Part 1 of Clustering. The following rules are applied:
 1. Exact normalized match          "Maria" == "maria" == "Aunt Maria"(stripped)
 2. Token containment               "Maria" is a token of "Maria Rodriguez"
-3. Nickname table                  "Mar" -> "Maria", "Bill" -> "William"
 IMPORTANT: a short form merges into a long form ONLY if exactly one
 candidate exists. If both "Maria Rodriguez" and "Maria Hayes" are present,
 just "Maria" stays unmerged and gets flagged for review.
@@ -44,23 +43,6 @@ KINSHIP_AND_TITLES = {
     "youngest", "eldest", "only", "middle", "maternal", "paternal",
     "biological", "bio", "adoptive", "adopted", "foster", "late", "dear",
     "beloved", "step", "half", "great", "grand", "former", "current", "ex",
-}
-
-
-# Nickname / diminutive -> canonical given name. We try to be CONSERVATIVE to
-# avoid overmerging. Not sure if we should keep this though... 
-NICKNAMES = {
-    "johnny": "john", "steve": "steven", "stevie": "steven",
-    "eddie": "edward", "charlie": "charles", "ben": "benjamin", 
-    "benny": "benjamin", "sam": "samuel", "sammy": "samuel",
-    "nick": "nicholas", "greg": "gregory", "fred": "frederick",
-    "ronnie": "ronald", "donnie": "donald",
-    # female
-    "susie": "susan", "suzy": "susan", "maggie": "margaret",
-    "cathy": "catherine", "tricia": "patricia", "barb": "barbara",
-    "deb": "deborah", "debbie": "deborah", "becca": "rebecca",
-    "abby": "abigail", "vicky": "victoria", "steph": "stephanie",
-    "jess": "jessica", "jessie": "jessica", "kim": "kimberly", 
 }
 
 
@@ -114,13 +96,6 @@ def normalize(text: str) -> tuple[str, ...]:
 
 
 """
-Resolve a nickname to the associated given name (or itself).
-"""
-def canonical_token(token: str) -> str:
-    return NICKNAMES.get(token, token)
-
-
-"""
 Implements an union find to later find/merge mention indices. Supports two
 functions: find (an element in a group0 and union (two groups).
 """
@@ -152,8 +127,7 @@ def merge_person_mentions(transcript_id: str, mentions: list[Mention]) -> tuple[
         return [], []
 
     norm = [normalize(m.text) for m in persons]  # eg. ("sarah", "hayes")
-    canon = [tuple(canonical_token(t) for t in toks) for toks in norm]
-    # eg. canon = [("maria",), ("maria",), ("maria","rodriguez")]
+    canon = norm
     honor = [_honorific(m.text) for m in persons]  # "" unless a title leads it
     uf = _UnionFind(len(persons))  # just initialize, not merged yet
 

@@ -16,7 +16,9 @@ Non-person mentions (LOCATION / DATE_* / AGE) are grouped into entities here,
 since the per-mention modules only clustered PERSON/NICKNAME.
 """
 
+
 from __future__ import annotations
+import os
 import re
 from dateutil import parser as dateparser
 from .models import Entity
@@ -58,11 +60,18 @@ Return (entities, edges, info). `info` carries the interviewee entity,
 the coref flag, and any ambiguous person mentions.
     """
 def run_pipeline(transcript_id, transcript, mentions, metadata=None,
-                 gazetteer_path="data/gazetteer.csv", run_coref=True, trace=False):
+                 gazetteer_path="data/gazetteer.csv", run_coref=True, trace=False,
+                 llm=None):
     metadata = metadata or {}
     interview_date = None
     if metadata.get("interview_date"):
         interview_date = dateparser.parse(metadata["interview_date"]).date()
+
+    # opt-in local LLM: explicit client, or KG_USE_LLM=1 in the environment.
+    # off by default.
+    if llm is None and os.environ.get("KG_USE_LLM") == "1":
+        from llm_layer import default_client
+        llm = default_client()
 
     # people
     persons, ambiguous = merge_person_mentions(transcript_id, mentions)
@@ -76,7 +85,9 @@ def run_pipeline(transcript_id, transcript, mentions, metadata=None,
 
     coref_ran, coref_merges, coref_flags = False, [], []
     if run_coref and persons:
-        persons, _pairs, coref_ran = apply_coref(transcript, persons)
+        # LLM use #1 (merge adjudication)
+        # passing `llm=llm` here activates it 
+        persons, _pairs, coref_ran = apply_coref(transcript, persons, llm=llm)
         if trace:
             for base_id, other_id in _pairs:
                 b = pre_coref.get(base_id, {}).get("forms") or [base_id]
@@ -123,6 +134,12 @@ def run_pipeline(transcript_id, transcript, mentions, metadata=None,
 
     entities = [interviewee] + persons + locations + dates + ages
     edges += age_date_constraints(transcript, entities)
+
+    # LLM uses #2 and #3 
+    if llm is not None:
+        from llm_layer import openworld_pass, infer_attributes_pass
+        openworld_pass(transcript, entities, llm)        # #2: fill list misses
+        infer_attributes_pass(transcript, entities, llm)  # #3: infer gender/role
 
     info = {
         "interviewee": interviewee,

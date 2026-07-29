@@ -7,3 +7,6 @@ venv/
 .pytest_cache/
 .mypy_cache/
 data/
+# LLM decision cache (contains transcript-derived model responses)
+.llm_cache.json
+*.llm_cache.json

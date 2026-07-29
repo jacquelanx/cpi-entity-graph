@@ -16,7 +16,8 @@ last stage.
 from __future__ import annotations
 import re
 from .models import Entity
-from .merge_strings import normalize, canonical_token
+from .merge_strings import normalize
+from llm_layer import adjudicate_same_person
 from fastcoref import FCoref
 
 
@@ -69,8 +70,6 @@ def _name_compatible(a: Entity, b: Entity) -> bool:
         return True                                   # one side is descriptor-only
     if ta & tb:
         return True                                   # shared token ("Maria Lopez"/"Maria")
-    if {canonical_token(t) for t in ta} & {canonical_token(t) for t in tb}:
-        return True                                   # nickname table links them
     for x in ta:                                      # one a prefix of the other ("Will"/"William")
         for y in tb:
             if len(x) >= 3 and len(y) >= 3 and (x.startswith(y) or y.startswith(x)):
@@ -83,12 +82,23 @@ def _genders_conflict(a: Entity, b: Entity) -> bool:
     return ga is not None and gb is not None and ga != gb
 
 
+"""Fold `other` into `base` (mentions, non-null attributes, review flag)."""
+def _merge_into(base: Entity, other: Entity, person_entities: list[Entity]) -> None:
+    base.mentions.extend(other.mentions)
+    base.mentions.sort(key=lambda m: m.start)
+    base.attributes.update(
+        {k: v for k, v in other.attributes.items() if v is not None})
+    if other.needs_review:
+        base.flag_entity(other.review_reason)
+    person_entities.remove(other)
+
+
 """
 Run coref and fold its clusters into our entities.
 Returns (entities, merged_pairs, ran_flag). merged_pairs lists only the pairs
 that were ACTUALLY merged (suggestions that were merely flagged are not counted).
 """
-def apply_coref(transcript: str, person_entities: list[Entity]) -> tuple[list[Entity], list[tuple[str, str]], bool]:
+def apply_coref(transcript: str, person_entities: list[Entity], llm=None) -> tuple[list[Entity], list[tuple[str, str]], bool]:
     model = FCoref()
     pred = model.predict(texts=[transcript])[0]  # pass in an one-item list and extract the only item
     clusters = pred.get_clusters(as_strings=False)  # see header comment
@@ -107,32 +117,48 @@ def apply_coref(transcript: str, person_entities: list[Entity]) -> tuple[list[En
         if len(touched) < 2:  # nothing to merge
             continue
 
-        base = touched[0]  # everything compatible will be merged into base
+        base = touched[0]  # a compatible/confirmed `other` is merged into base
         for other in touched[1:]:
-            # 1) contradicting evidence -> never merge, flag both
-            if _same_sentence(base, other, bounds):
-                base.flag_entity(f"coref linked {other.entity_id} but they co-occur "
-                                 f"in a sentence (likely distinct people); not merged")
-                other.flag_entity(f"coref linked {base.entity_id} but they co-occur "
-                                  f"in a sentence (likely distinct people); not merged")
-                continue
+            llm_on = llm is not None and llm.available()
+
+            # Gender conflict is ALWAYS a hard block (strong two-way signal).
             if _genders_conflict(base, other):
                 base.flag_entity(f"coref linked {other.entity_id} but genders conflict; not merged")
                 other.flag_entity(f"coref linked {base.entity_id} but genders conflict; not merged")
                 continue
 
-            # 2) corroborated by name compatibility -> merge
-            if _name_compatible(base, other):
-                base.mentions.extend(other.mentions)
-                base.mentions.sort(key=lambda m: m.start)
-                base.attributes.update(
-                    {k: v for k, v in other.attributes.items() if v is not None}
-                )
-                if other.needs_review:
-                    base.flag_entity(other.review_reason)
-                person_entities.remove(other)
+            # Same-sentence co-occurrence is a hard block ONLY when there's no LLM.
+            # With the LLM we let it read the sentence--it reliably tells an
+            # explicit alias ("we called Roberto Beto") from two distinct people
+            # in one sentence ("Sarah's brother Danny").
+            if _same_sentence(base, other, bounds) and not llm_on:
+                base.flag_entity(f"coref linked {other.entity_id} but they co-occur "
+                                 f"in a sentence (likely distinct people); not merged")
+                other.flag_entity(f"coref linked {base.entity_id} but they co-occur "
+                                  f"in a sentence (likely distinct people); not merged")
+                continue
+
+            # DOUBLE-GATE. The coref link is the deterministic half; when the LLM
+            # is active it must CONFIRM the two are the same person (with evidence);
+            # this recovers alias/nickname merges that we don't want to hardcode while
+            # staying conservative. With no LLM we fall back to rules-only behavior.
+            verdict = adjudicate_same_person(llm, transcript, base, other) if llm_on else None
+            if verdict is not None:
+                same = bool(verdict.get("same")) and (
+                    verdict.get("confidence") == "high" or verdict.get("evidence"))
+                if same:
+                    if verdict.get("evidence"):
+                        base.attributes.setdefault("merge_evidence", verdict["evidence"])
+                    _merge_into(base, other, person_entities)
+                    merged_pairs.append((base.entity_id, other.entity_id))
+                else:
+                    base.flag_entity(f"coref linked {other.entity_id} but the LLM did "
+                                     f"not confirm same person; not merged")
+                    other.flag_entity(f"coref linked {base.entity_id} but the LLM did "
+                                      f"not confirm same person; not merged")
+            elif _name_compatible(base, other):
+                _merge_into(base, other, person_entities)
                 merged_pairs.append((base.entity_id, other.entity_id))
-            # 3) uncorroborated (names differ) -> flag, do NOT merge
             else:
                 base.flag_entity(f"coref suggests same as {other.entity_id} but "
                                  f"names differ; needs review")

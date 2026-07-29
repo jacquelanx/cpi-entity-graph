@@ -33,6 +33,12 @@ from graph.models import Entity, Mention, Relation
 
 RUN_COREF = os.environ.get("EVAL_NO_COREF") != "1"
 
+# opt-in local LLM adjudicator (KG_USE_LLM=1); no-ops if Ollama isn't running
+_LLM = None
+if os.environ.get("KG_USE_LLM") == "1":
+    from llm_layer import default_client
+    _LLM = default_client()
+
 REPO = Path(__file__).resolve().parent.parent
 ROOT = REPO / "tests"                       # transcripts + gold live here
 DATA_GAZ = REPO / "data" / "gazetteer.csv"
@@ -105,7 +111,7 @@ def evaluate_one(tid: str) -> dict:
     # clusters into our person entities and can merge split name forms.
     coref_merges = 0
     if RUN_COREF and persons:
-        persons, merged_pairs, _ran = apply_coref(text, persons)
+        persons, merged_pairs, _ran = apply_coref(text, persons, llm=_LLM)
         coref_merges = len(merged_pairs)
 
     interviewee = Entity(entity_id=f"{tid}_e000", category="PERSON")
