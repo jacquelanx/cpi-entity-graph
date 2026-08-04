@@ -42,6 +42,8 @@ def detections_from_gold(text: str, gold: dict):
         add(d["text"], d["category"])
     for a in gold.get("ages", []):
         add(a["text"], "AGE")
+    for x in gold.get("identifiers", []):     # PHONE/EMAIL/SSN_OR_ID/USERNAME_HANDLE/OCCUPATION
+        add(x["text"], x["type"])
     return dets
 
 

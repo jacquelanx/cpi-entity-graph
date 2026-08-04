@@ -121,22 +121,21 @@ def apply_coref(transcript: str, person_entities: list[Entity], llm=None) -> tup
         for other in touched[1:]:
             llm_on = llm is not None and llm.available()
 
+            # A REJECTED coref link is (almost always) fastcoref over-linking two
+            # distinct people -- keeping them apart is the CORRECT outcome, so we do
+            # NOT flag it for review. Only a genuinely UNRESOLVED ambiguity (coref
+            # says same, names differ, and no LLM to adjudicate) is worth a human.
+
             # Gender conflict is ALWAYS a hard block (strong two-way signal).
             if _genders_conflict(base, other):
-                base.flag_entity(f"coref linked {other.entity_id} but genders conflict; not merged")
-                other.flag_entity(f"coref linked {base.entity_id} but genders conflict; not merged")
-                continue
+                continue                                  # correct separation; no flag
 
             # Same-sentence co-occurrence is a hard block ONLY when there's no LLM.
             # With the LLM we let it read the sentence--it reliably tells an
             # explicit alias ("we called Roberto Beto") from two distinct people
             # in one sentence ("Sarah's brother Danny").
             if _same_sentence(base, other, bounds) and not llm_on:
-                base.flag_entity(f"coref linked {other.entity_id} but they co-occur "
-                                 f"in a sentence (likely distinct people); not merged")
-                other.flag_entity(f"coref linked {base.entity_id} but they co-occur "
-                                  f"in a sentence (likely distinct people); not merged")
-                continue
+                continue                                  # likely distinct; no flag
 
             # DOUBLE-GATE. The coref link is the deterministic half; when the LLM
             # is active it must CONFIRM the two are the same person (with evidence);
@@ -151,15 +150,13 @@ def apply_coref(transcript: str, person_entities: list[Entity], llm=None) -> tup
                         base.attributes.setdefault("merge_evidence", verdict["evidence"])
                     _merge_into(base, other, person_entities)
                     merged_pairs.append((base.entity_id, other.entity_id))
-                else:
-                    base.flag_entity(f"coref linked {other.entity_id} but the LLM did "
-                                     f"not confirm same person; not merged")
-                    other.flag_entity(f"coref linked {base.entity_id} but the LLM did "
-                                      f"not confirm same person; not merged")
+                # LLM declined -> correct separation; no flag
             elif _name_compatible(base, other):
                 _merge_into(base, other, person_entities)
                 merged_pairs.append((base.entity_id, other.entity_id))
             else:
+                # coref says same, names differ, no LLM to adjudicate: genuinely
+                # unresolved -- THIS is the one case worth a human's review.
                 base.flag_entity(f"coref suggests same as {other.entity_id} but "
                                  f"names differ; needs review")
                 other.flag_entity(f"coref suggests same as {base.entity_id} but "

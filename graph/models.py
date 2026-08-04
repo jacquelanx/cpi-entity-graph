@@ -74,9 +74,8 @@ Set enum for relationships between nodes.
 class Relation (Enum):
     RELATED_TO = "RELATED_TO"       # person to person
     LOCATED_IN = "LOCATED_IN"       # place to place
-    NEAR = "NEAR"                   # place to place
-    WORKS_AT = "WORKS_AT"           # person to institution
-    STATED_WITH = "STATED_WITH"     # age/data
+    STATED_WITH = "STATED_WITH"     # age <-> the date it was co-stated with
+    ATTRIBUTE_OF = "ATTRIBUTE_OF"   # identifier/age/dob -> the person it belongs to
 
 
 """

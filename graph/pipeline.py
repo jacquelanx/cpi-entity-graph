@@ -21,17 +21,77 @@ from __future__ import annotations
 import os
 import re
 from dateutil import parser as dateparser
-from .models import Entity
+from .models import Entity, Edge, Relation
 from .merge_strings import merge_person_mentions
+from .aliases import apply_alias_cues
 from .coref import apply_coref
-from .kinship import extract_kinship
+from .kinship import extract_kinship, KINSHIP_GENDER
 from .attributes import infer_person_attributes
+from .identifiers import build_identifier_entities
 from .location_dates import (
     load_gazetteer, build_location_edges,
     resolve_date_entity, resolve_age_entity, age_date_constraints,
 )
 
 _DATE_CATS = ("DATE_ABSOLUTE", "DATE_RELATIVE", "DATE_ANCHOR", "DATE_OF_BIRTH")
+
+# Personal-PII categories we attribute to a specific person. Events
+# (DATE_ABSOLUTE/RELATIVE/ANCHOR) and OCCUPATION are excluded -- they rarely
+# "belong" to the speaker in a way that's deterministically recoverable.
+_PII_CATS = ("PHONE", "EMAIL", "SSN_OR_ID", "USERNAME_HANDLE", "DATE_OF_BIRTH", "AGE")
+
+# First-person cue that governs a PII span: a possessive ("my cell", "our file
+# number"), a first-person subject ("I was nineteen"), or a reach-me object
+# ("email me at ...", "call me").
+_FP_CUE = re.compile(
+    r"\b(?:my|our)\b|\bI\b|\b(?:reach|call|email|text|message)\s+me\b|\bme\s+at\b",
+    re.I)
+
+# A kin noun between the cue and the PII means it belongs to THAT relative, not
+# the speaker ("my daughter runs a page, @handle" -> the daughter's).
+_KIN_NOUN = re.compile(
+    r"\b(?:" + "|".join(re.escape(w) for w in
+                        sorted(KINSHIP_GENDER, key=len, reverse=True)) + r")\b",
+    re.I)
+
+
+def _link_interviewee_pii(transcript, entities, interviewee, persons):
+    """Deterministically attach the interviewee's OWN identifiers / age / DOB to
+    the (otherwise mention-less) interviewee node via ATTRIBUTE_OF edges, so the
+    graph can answer 'what PII belongs to the speaker?'. Conservative: an owner is
+    claimed only on a clear first-person cue with no intervening relative or other
+    named person -- otherwise ownership is left unset (safe)."""
+    stops = [0] + [m.end() for m in re.finditer(r"[.!?]", transcript)]
+    sents = list(zip(stops, stops[1:] + [len(transcript)]))
+
+    def sentence_of(pos):
+        for s, e in sents:
+            if s <= pos < e:
+                return s, e
+        return (sents[-1] if sents else (0, len(transcript)))
+
+    edges = []
+    for ent in entities:
+        if ent.category not in _PII_CATS or not ent.mentions:
+            continue
+        m = ent.mentions[0]
+        ss, se = sentence_of(m.start)
+        cues = list(_FP_CUE.finditer(transcript[ss:m.start]))
+        if not cues:
+            continue
+        cue_end = ss + cues[-1].end()               # closest cue to the PII
+        gap = transcript[cue_end:m.start]
+        # blocker: a kin noun, or another named person, sits between cue and PII
+        if _KIN_NOUN.search(gap):
+            continue
+        if any(cue_end <= pm.start < m.start for p in persons for pm in p.mentions):
+            continue
+        ent.attributes.setdefault("owner", "interviewee")
+        edges.append(Edge(source=ent.entity_id, target=interviewee.entity_id,
+                          relation=Relation.ATTRIBUTE_OF,
+                          detail=(ent.subtype or ent.category),
+                          evidence=transcript[ss:se].strip()))
+    return edges
 
 
 """
@@ -75,6 +135,8 @@ def run_pipeline(transcript_id, transcript, mentions, metadata=None,
 
     # people
     persons, ambiguous = merge_person_mentions(transcript_id, mentions)
+    # rule-based alias/nickname merges (closed cue set), independent of coref
+    apply_alias_cues(transcript, persons)
 
     # snapshot the rule-based clustering BEFORE coref, so the trace can show the
     # coref (ML) stage's effect separately
@@ -132,14 +194,33 @@ def run_pipeline(transcript_id, transcript, mentions, metadata=None,
     for a in ages:
         resolve_age_entity(a)
 
-    entities = [interviewee] + persons + locations + dates + ages
-    edges += age_date_constraints(transcript, entities)
+    # direct identifiers (PHONE/EMAIL/SSN_OR_ID/USERNAME_HANDLE/OCCUPATION): typed
+    # + normalized by rule, passed through so they reach surrogate generation
+    idents = build_identifier_entities(transcript_id, mentions)
 
-    # LLM uses #2 and #3 
+    entities = [interviewee] + persons + locations + dates + ages + idents
+    edges += age_date_constraints(transcript, entities)
+    # attach the interviewee's own identifiers / age / DOB to the e000 node
+    edges += _link_interviewee_pii(transcript, entities, interviewee, persons)
+
+    # LLM uses #2, #3, #4
     if llm is not None:
-        from llm_layer import openworld_pass, infer_attributes_pass
+        from llm_layer import openworld_pass, extract_pass, identifier_judge_pass
         openworld_pass(transcript, entities, llm)        # #2: fill list misses
-        infer_attributes_pass(transcript, entities, llm)  # #3: infer gender/role
+        # #3: windowed read-along -> attributes (in place), aliases (flagged in
+        # place), and relations returned as tuples. Relations are added as edges
+        # ONLY if the rules didn't already have that pair (rules stay authoritative).
+        llm_rels = extract_pass(transcript, entities, interviewee, llm)
+        have = {(e.source, e.target) for e in edges if e.relation == Relation.RELATED_TO}
+        for r in llm_rels:
+            if (r["source"], r["target"]) not in have:
+                edges.append(Edge(source=r["source"], target=r["target"],
+                                  relation=Relation.RELATED_TO,
+                                  detail=r["detail"], evidence=f"(llm) {r['evidence']}"))
+                have.add((r["source"], r["target"]))
+        # #4: contextual judgment on direct identifiers (owner / occupation
+        # identifying-ness) -- suggestions only, never lowers redaction
+        identifier_judge_pass(transcript, entities, llm)
 
     info = {
         "interviewee": interviewee,

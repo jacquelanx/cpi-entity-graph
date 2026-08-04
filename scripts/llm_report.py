@@ -87,6 +87,11 @@ def reconcile_items(case):
             if a.get("suggested_event"):
                 d += f" ({a['suggested_event']})"
             sugg.append({"kind": "anchor", "text": nm, "detail": d})
+        if a.get("suggested_relation"):
+            sr = a["suggested_relation"]
+            sugg.append({"kind": "relation", "text": nm,
+                         "detail": f"LLM: maybe '{sr['detail']}' with {sr['with']} "
+                                   f"(proposed but not verifiable locally)"})
         for line in (e.review_reason or "").split("; "):
             if "conflicts with rule" in line:
                 conflict.append({"kind": "gender", "text": nm, "detail": line})
@@ -181,11 +186,13 @@ _EXTRA_CSS = """
 .rec-act .rej:hover{background:#fbecea;border-color:#c0574f;}
 .rec-card.accepted{background:#f2f8f3;} .rec-card.accepted .acc{background:#4a9d5b;color:#fff;border-color:#4a9d5b;}
 .rec-card.rejected{background:#fbf2f1;} .rec-card.rejected .rej{background:#c0574f;color:#fff;border-color:#c0574f;}
-#resolve-bar{position:sticky;bottom:0;background:#fff;border-top:1px solid var(--line);
-  padding:12px 32px;display:flex;gap:16px;align-items:center;justify-content:flex-end;
-  font-size:13px;color:var(--muted);margin:0 -32px -80px;}
-#resolve-bar button{font:inherit;font-size:13px;border:1px solid var(--border-strong,#c9c9c9);
+#resolve-bar{position:sticky;bottom:16px;background:#fff;border:1px solid var(--line);
+  border-radius:12px;padding:12px 18px;display:flex;gap:16px;align-items:center;
+  justify-content:flex-end;font-size:13px;color:var(--muted);margin:26px 0 0;
+  box-shadow:0 4px 18px rgba(20,22,26,0.06);}
+#resolve-bar button{font:inherit;font-size:13px;border:1px solid var(--accent);color:var(--accent);
   background:#fff;border-radius:8px;padding:6px 16px;cursor:pointer;}
+#resolve-bar button:hover{background:var(--accentbg);}
 """
 
 _JS = """<script>

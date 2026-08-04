@@ -20,7 +20,7 @@ for internal consistency.
 from __future__ import annotations
 import csv
 import re
-from datetime import timedelta
+from datetime import timedelta, datetime
 from pathlib import Path
 from dateutil import parser as dateparser
 from .models import Edge, Entity, Relation
@@ -123,6 +123,14 @@ ANCHOR_EVENTS = {
     "london olympics": "2012-07-27",
 }
 
+# Fixed default for dateutil so missing components resolve DETERMINISTICALLY
+# (missing day -> 1, missing month -> January) instead of dateutil silently
+# defaulting to "today", which made "March 1990" resolve to today's day-of-month
+# and change with the run date.
+_ABS_DATE_DEFAULT = datetime(2000, 1, 1)
+# a plausible explicit 4-digit year; used to detect year-less absolute dates
+_YEAR_RE = re.compile(r"\b(?:1[89]\d{2}|20\d{2})\b")
+
 # approximate mid-season dates
 _SEASONS = {"spring": "03-20", "summer": "06-21", "fall": "09-22",
             "autumn": "09-22", "winter": "12-21"}
@@ -186,12 +194,19 @@ def resolve_date_entity(entity: Entity, interview_date) -> None:
     attrs.setdefault("shiftable", True)
 
     if entity.category == "DATE_ABSOLUTE" or entity.category == "DATE_OF_BIRTH":
+        raw = entity.mentions[0].text
         try:
             attrs["resolved_value"] = dateparser.parse(
-                entity.mentions[0].text, fuzzy=True
+                raw, fuzzy=True, default=_ABS_DATE_DEFAULT
             ).date().isoformat()
         except (ValueError, OverflowError):
             entity.flag_entity("absolute date failed to parse")
+            return
+        # A missing day now defaults to the 1st (deterministic); but a missing
+        # YEAR pulls from the default and is almost certainly wrong -- flag it.
+        if not _YEAR_RE.search(raw):
+            entity.flag_entity("absolute date has no explicit year; "
+                               "resolved value used a default and may be wrong")
         return
 
     if entity.category == "DATE_ANCHOR":
@@ -318,16 +333,20 @@ def resolve_age_entity(entity: Entity) -> None:
 
 
 """
-This takes care of STATED_WITH edges. If an AGE and a DATE is stated in the
-same sentence, they must stay arithmetically consistent after date-shifting.
-IMPORTANT: sentence might not be enough... what about context that builds?
-The current implementation links an AGE to every DATE appearing within
-`window` sentences (default = same sentence).
+STATED_WITH edges: an age and the date it was co-stated with must stay
+arithmetically consistent after date-shifting ("I enlisted in September 2008. I
+was eighteen" -> shifting 2008 must move the implied birth year too).
+
+Scoped deliberately: each AGE links to the SINGLE NEAREST date within `window`
+sentences (by character distance), not to every date in range. The old
+"every age x every date in window" produced quadratic, duplicated, and spurious
+links -- e.g. "eighteen" tying to both September 2008 (the real anchor) and a
+nearby "9/11". One age has one temporal anchor, so one edge per age.
 """
 def age_date_constraints(
     transcript: str, entities: list[Entity], window: int = 1
 ) -> list[Edge]:
-    
+
     boundaries = [0] + [m.end() for m in re.finditer(r"[.!?]", transcript)]
     sentences = list(zip(boundaries, boundaries[1:] + [len(transcript)]))
 
@@ -344,17 +363,22 @@ def age_date_constraints(
              if e.category in ("DATE_ABSOLUTE", "DATE_RELATIVE", "DATE_ANCHOR")]
     edges = []
     for a in ages:
+        best = None                     # (char_gap, date_entity, age_mention)
         for am in a.mentions:
-            s_idx = sentence_of(am.start)
+            a_sent = sentence_of(am.start)
             for d in dates:
                 for dm in d.mentions:
-                    # if mentions occur within `window` sentences
-                    if abs(sentence_of(dm.start) - s_idx) <= window:
-                        s, e = sentences[s_idx]
-                        edges.append(Edge(
-                            source=a.entity_id, target=d.entity_id,
-                            relation=Relation.STATED_WITH,
-                            detail="age and date co-stated; keep arithmetic",
-                            evidence=transcript[s:e].strip(),
-                        ))
+                    if abs(sentence_of(dm.start) - a_sent) <= window:
+                        gap = abs(dm.start - am.start)
+                        if best is None or gap < best[0]:
+                            best = (gap, d, am)
+        if best is not None:
+            _, d, am = best
+            s, e = sentences[sentence_of(am.start)]
+            edges.append(Edge(
+                source=a.entity_id, target=d.entity_id,
+                relation=Relation.STATED_WITH,
+                detail="age and date co-stated; keep arithmetic",
+                evidence=transcript[s:e].strip(),
+            ))
     return edges

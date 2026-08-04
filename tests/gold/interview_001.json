@@ -47,5 +47,13 @@
     {"text": "Charity Hospital", "in_gazetteer": true},
     {"text": "Houston", "in_gazetteer": false},
     {"text": "Baton Rouge", "in_gazetteer": false}
+  ],
+  "identifiers": [
+    {"text": "504-555-0182", "type": "PHONE"},
+    {"text": "ninthborn@example.com", "type": "EMAIL"},
+    {"text": "433-72-1198", "type": "SSN_OR_ID"},
+    {"text": "@ward9_family", "type": "USERNAME_HANDLE"},
+    {"text": "orderly", "type": "OCCUPATION"},
+    {"text": "nurse", "type": "OCCUPATION"}
   ]
 }

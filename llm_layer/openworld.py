@@ -95,11 +95,25 @@ def openworld_pass(transcript: str, entities: list, llm) -> None:
     for e in entities:
         if e.category == "PERSON":
             # skip the interviewee (no mentions) and anyone the rules already
-            # classified (family / professional / listed public figure)
-            if not e.mentions or e.subtype in ("FAMILY", "PROFESSIONAL", "PUBLIC_FIGURE"):
+            # tied to the interviewee's own life (family / professional)
+            if not e.mentions or e.subtype in ("FAMILY", "PROFESSIONAL"):
                 continue
             v = classify_person_public(llm, transcript, e)
-            if v and v.get("public_figure") and v.get("confidence") == "high":
+            if not v:
+                continue
+            if e.subtype == "PUBLIC_FIGURE":
+                # the rules KEPT this listed name unredacted. Safety re-check: if
+                # the model judges it a private individual, RAISE redaction. The LLM
+                # only ever moves toward MORE redaction, never less.
+                if v.get("public_figure") is False and v.get("confidence") == "high":
+                    e.attributes["replace"] = True
+                    e.flag_entity("LLM: rules kept this as a public figure, but "
+                                  "context suggests a private individual; redacted "
+                                  "for safety")
+                continue
+            # unlisted person: flag (for human review) if the model thinks it's a
+            # public figure -- but NEVER lower redaction automatically
+            if v.get("public_figure") and v.get("confidence") == "high":
                 e.attributes["candidate_public_figure"] = v.get("who") or True
                 e.attributes["replace"] = True     # NEVER flip to False here
                 who = v.get("who") or "public figure"

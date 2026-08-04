@@ -20,6 +20,9 @@ _HL = {
 }
 _PERSON_FILL = {"FAMILY": "#5B7FA6", "PROFESSIONAL": "#9CB6D2",
                 "PUBLIC_FIGURE": "#AEB3BA"}
+_ID_CATS = ("PHONE", "EMAIL", "SSN_OR_ID", "USERNAME_HANDLE", "OCCUPATION")
+_ID_LABEL = {"PHONE": "Phone", "EMAIL": "Email", "SSN_OR_ID": "SSN / ID",
+             "USERNAME_HANDLE": "Handle", "OCCUPATION": "Occupation"}
 
 
 def _relname(ed):
@@ -34,9 +37,9 @@ def _pct(x):
     return "&mdash;" if x is None else f"{x * 100:.0f}%"
 
 
-def section(num, title, body, note="", wide=False):
+def section(num, title, body, note="", wide=False):   # `wide` kept for callers; ignored
     note_html = f"<p class='s-note'>{note}</p>" if note else ""
-    cls = "stage wide" if wide else "stage"
+    cls = "stage"
     return (f"<section class='{cls}'><div class='s-head'><span class='s-num'>{num}</span>"
             f"<h3>{escape(title)}</h3></div>{note_html}{body}</section>")
 
@@ -149,14 +152,19 @@ def stage_relations(case) -> str:
     for ed in case["edges"]:
         rel = _relname(ed)
         if rel == "RELATED_TO":
-            rows.append(f"<li><b>{escape(nm(ed.source))}</b> "
+            ev = str(ed.evidence or "")
+            llm = ev.startswith("(llm)")
+            ev = ev[5:].strip() if llm else ev
+            tag = "<span class='src llm'>llm</span>" if llm else "<span class='src rule'>rule</span>"
+            rows.append(f"<li>{tag}<b>{escape(nm(ed.source))}</b> "
                         f"<span class='rel'>{escape(ed.detail)}</span> "
                         f"<b>{escape(nm(ed.target))}</b> "
-                        f"<span class='ev'>&ldquo;{escape(ed.evidence)}&rdquo;</span></li>")
+                        f"<span class='ev'>&ldquo;{escape(ev)}&rdquo;</span></li>")
     body = (f"<ul class='rels'>{''.join(rows)}</ul>" if rows
             else "<p class='muted'>No family relationships were extracted.</p>")
     return section("04", "Extract relationships", body,
-                   f"{len(rows)} kinship edges, each with the quote that justifies it.")
+                   f"{len(rows)} relationships (rule-derived and LLM-added), each with its "
+                   f"evidence.")
 
 
 # ---------- 5 · resolved entities & attributes ----------
@@ -166,24 +174,67 @@ def stage_entities(case) -> str:
     for e in case["entities"]:
         if e.category != "PERSON" or e.entity_id == iv or not e.mentions:
             continue
-        chips = [f"<span class='chip c-person'>PERSON"
-                 + (f" &middot; {e.subtype}" if e.subtype else "") + "</span>"]
-        if e.attributes.get("gender"):
-            chips.append(f"<span class='chip c-attr'>gender {e.attributes['gender']}</span>")
-        chips.append(f"<span class='chip c-attr'>replace: "
-                     f"{'yes' if e.attributes.get('replace', True) else 'no'}</span>")
-        if e.needs_review:
-            chips.append("<span class='chip c-flag'>&#9873; review</span>")
+        a = e.attributes
+        cat = "PERSON" + (f" &middot; {e.subtype}" if e.subtype else "")
+        chips = []
+        if a.get("gender"):
+            chips.append(f"<span class='chip g'>gender {a['gender']}</span>")
+        chips.append(f"<span class='chip'>replace: "
+                     f"{'yes' if a.get('replace', True) else 'no'}</span>")
+
+        sug = []
+        if a.get("suggested_gender"):
+            sug.append(f"gender? {a['suggested_gender']}")
+        if a.get("suggested_role"):
+            sug.append(f"role &ldquo;{escape(a['suggested_role'])}&rdquo;")
+        if a.get("candidate_public_figure"):
+            sug.append("maybe public figure")
+        if a.get("suggested_merge_with"):
+            sug.append(f"maybe same as {escape(str(a['suggested_merge_with']))}")
+        sug_html = f"<div class='sug'>LLM: {' &middot; '.join(sug)}</div>" if sug else ""
+
+        note = f"<div class='note'>&#9873; {escape(e.review_reason)}</div>" if e.needs_review else ""
         forms = " / ".join(escape(f) for f in e.sorted_mentions)
-        note = f"<div class='note'>{escape(e.review_reason)}</div>" if e.needs_review else ""
-        cards.append(f"<div class='card{' flag' if e.needs_review else ''}'>"
-                     f"<div class='nm'>{escape(_pname(e))}</div>"
-                     f"<div class='forms'>{forms}</div>{''.join(chips)}{note}</div>")
+        cards.append(
+            f"<div class='card{' flag' if e.needs_review else ''}'>"
+            f"<div class='nm'>{escape(_pname(e))}<span class='cat'>{cat}</span></div>"
+            f"<div class='forms'>{forms}</div>{''.join(chips)}{sug_html}{note}</div>")
     body = f"<div class='cards'>{''.join(cards)}</div>"
-    return section("05", "Resolve entities &amp; attributes", body)
+    return section("05", "Resolve entities &amp; attributes", body,
+                   "Each detected person as one entity: rule-derived attributes, plus "
+                   "any LLM suggestions (grey vs. “LLM:” line).")
 
 
-# ---------- 6 · graph ----------
+# ---------- 6 · direct identifiers ----------
+def stage_identifiers(case) -> str:
+    ids = [e for e in case["entities"] if e.category in _ID_CATS]
+    if not ids:
+        return section("06", "Direct identifiers",
+                       "<p class='muted'>No direct identifiers detected in this transcript.</p>",
+                       "Phones, emails, IDs, handles, occupations &mdash; typed and passed "
+                       "through so surrogate generation replaces them.")
+    cards = []
+    for e in sorted(ids, key=lambda x: _ID_CATS.index(x.category)):
+        a = e.attributes
+        label = _ID_LABEL.get(e.category, e.category)
+        if e.subtype and e.subtype not in (e.category, label.upper()):
+            label += f" &middot; {e.subtype}"
+        chips = [f"<span class='chip g'>{label}</span>",
+                 f"<span class='chip'>replace: {'yes' if a.get('replace', True) else 'no'}</span>"]
+        if a.get("owner"):
+            chips.append(f"<span class='chip'>owner: {escape(str(a['owner']))}</span>")
+        if a.get("identifying"):
+            chips.append("<span class='chip warn'>possibly identifying</span>")
+        note = f"<div class='note'>&#9873; {escape(e.review_reason)}</div>" if e.needs_review else ""
+        cards.append(f"<div class='card{' flag' if e.needs_review else ''}'>"
+                     f"<div class='nm'>{escape(_pname(e))}</div>{''.join(chips)}{note}</div>")
+    body = f"<div class='cards'>{''.join(cards)}</div>"
+    return section("06", "Direct identifiers", body,
+                   f"{len(ids)} identifier(s): typed by rule, with owner / identifying-ness "
+                   f"judged by the LLM. All kept for replacement in surrogate generation.")
+
+
+# ---------- 7 · graph ----------
 def _graph_svg(case) -> str:
     ents = {e.entity_id: e for e in case["entities"]}
     iv = case["info"]["interviewee"].entity_id
@@ -236,7 +287,12 @@ def _graph_svg(case) -> str:
     W, H = (max(xs) - min(xs)) + 2 * pad, (max(ys) - min(ys)) + 2 * pad
     P = lambda n: (pos[n][0] + dx, pos[n][1] + dy)
 
-    parts = [f"<svg width='100%' viewBox='0 0 {W:.0f} {H:.0f}' role='img' "
+    # render at natural size (capped), centered, responsive -- not stretched to
+    # the full container width
+    disp_w = min(W, 560.0)
+    disp_h = disp_w * H / W
+    parts = [f"<svg viewBox='0 0 {W:.0f} {H:.0f}' width='{disp_w:.0f}' height='{disp_h:.0f}' "
+             f"role='img' style='max-width:100%;height:auto;display:block;margin:0 auto' "
              f"xmlns='http://www.w3.org/2000/svg'><title>Relationship graph</title>"]
     for s, t, d in rel:
         if s in pos and t in pos:
@@ -289,89 +345,127 @@ def _places_times(case) -> str:
     return loc_html + dt_html
 
 
+_GRAPH_LEGEND = (
+    "<div class='glegend'>"
+    "<span><i style='background:#2C4A6E'></i>interviewee</span>"
+    "<span><i style='background:#5B7FA6'></i>family</span>"
+    "<span><i style='background:#9CB6D2'></i>professional</span>"
+    "<span><i style='background:#AEB3BA'></i>public figure</span>"
+    "<span class='ring'>&#9711; red ring = flagged for review</span></div>"
+)
+
+
 def stage_graph(case) -> str:
-    body = f"<div class='graph'>{_graph_svg(case)}{_places_times(case)}</div>"
-    return section("06", "Entity graph", body,
-                   "Interviewee at center; a red ring marks an entity flagged for review.",
-                   wide=True)
+    body = f"<div class='graph'>{_graph_svg(case)}{_GRAPH_LEGEND}{_places_times(case)}</div>"
+    return section("07", "Entity graph", body,
+                   "Interviewee at center; each line is a relationship.")
+
+
+_STEPS = ["Detect", "Cluster", "Coref", "Relations", "Entities", "Identifiers", "Graph"]
+
+
+def _stepper() -> str:
+    chips = [f"<span class='st'><b>{i:02d}</b>{s}</span>" for i, s in enumerate(_STEPS, 1)]
+    return "<div class='stepper'>" + "<span class='sep'>&rarr;</span>".join(chips) + "</div>"
 
 
 def transcript_panel(case, metrics=None) -> str:
     head = metrics_grid(metrics) if metrics else ""
     stages = (stage_detect(case) + stage_cluster(case) + stage_coref(case)
-              + stage_relations(case) + stage_entities(case) + stage_graph(case))
-    return head + f"<div class='stages'>{stages}</div>"
+              + stage_relations(case) + stage_entities(case) + stage_identifiers(case)
+              + stage_graph(case))
+    return head + _stepper() + f"<div class='stages'>{stages}</div>"
 
 
 CSS = """
-:root{--ink:#1b1d21;--muted:#6b7280;--faint:#9ca3af;--line:#ececef;--panel:#fafafa;--accent:#2C4A6E;}
+:root{--ink:#1f2328;--muted:#5b636c;--faint:#9aa3ad;--line:#e7e9ec;--panel:#f6f7f9;
+  --accent:#3b6ea5;--accentbg:#eef3f9;}
 *{box-sizing:border-box;}
-body{margin:0;background:#fff;color:var(--ink);-webkit-font-smoothing:antialiased;
+body{margin:0;background:#fbfbfc;color:var(--ink);-webkit-font-smoothing:antialiased;
   font-family:'Iowan Old Style','Palatino Linotype',Palatino,'Book Antiqua',Georgia,'Times New Roman',serif;
-  font-size:16px;line-height:1.65;}
-.wrap{max-width:1180px;margin:0 auto;padding:40px 32px 80px;}
-h1{font-size:25px;font-weight:600;letter-spacing:-0.4px;margin:0 0 4px;}
-.lede{color:var(--muted);font-size:14.5px;margin:0 0 8px;max-width:70ch;}
-h3{font-size:16px;font-weight:600;margin:0;}
+  font-size:16px;line-height:1.6;}
+.wrap{max-width:960px;margin:0 auto;padding:40px 28px 100px;}
+h1{font-size:24px;font-weight:600;letter-spacing:-0.3px;margin:0 0 4px;}
+.lede{color:var(--muted);font-size:14.5px;margin:0 0 8px;max-width:72ch;}
+h3{font-size:15.5px;font-weight:600;margin:0;letter-spacing:-0.1px;}
 .muted{color:var(--muted);} .faint{color:var(--faint);}
 
 /* tabs */
-.tabs{display:flex;flex-wrap:wrap;gap:2px;border-bottom:1px solid var(--line);margin:26px 0 30px;}
-.tab{appearance:none;background:none;border:none;cursor:pointer;font:inherit;font-size:14px;
-  color:var(--muted);padding:10px 16px 12px;border-bottom:2px solid transparent;margin-bottom:-1px;}
-.tab .t-sub{display:block;font-size:11.5px;color:var(--faint);margin-top:1px;}
+.tabs{display:flex;flex-wrap:wrap;gap:4px;border-bottom:1px solid var(--line);margin:24px 0 26px;}
+.tab{appearance:none;background:none;border:none;cursor:pointer;font:inherit;font-size:13.5px;
+  color:var(--muted);padding:9px 14px 11px;border-bottom:2px solid transparent;margin-bottom:-1px;text-align:left;}
+.tab .t-sub{display:block;font-size:11px;color:var(--faint);margin-top:1px;}
 .tab:hover{color:var(--ink);}
-.tab.active{color:var(--ink);border-bottom-color:var(--accent);}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent);}
 .tab.active .t-sub{color:var(--muted);}
 .panel{display:none;} .panel.active{display:block;}
 
 /* metrics */
-.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);
-  border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-bottom:38px;}
-.m-tile{background:#fff;padding:16px 18px;}
-.m-val{font-size:26px;font-weight:600;letter-spacing:-0.5px;}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:24px;}
+.m-tile{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px 16px;}
+.m-val{font-size:23px;font-weight:600;letter-spacing:-0.5px;line-height:1.1;}
 .m-val.ok{color:#2f7a3d;} .m-val.bad{color:#b3261e;}
-.m-lab{font-size:12.5px;color:var(--muted);margin-top:2px;}
-.m-sub{font-size:11px;color:var(--faint);margin-top:3px;}
+.m-lab{font-size:12px;color:var(--muted);margin-top:4px;}
+.m-sub{font-size:10.5px;color:var(--faint);margin-top:2px;}
+@media(max-width:760px){.metrics{grid-template-columns:repeat(2,1fr);}}
 
-/* stages: two-column grid; wide stages span the full row */
-.stages{display:grid;grid-template-columns:1fr 1fr;gap:34px 40px;align-items:start;}
-.stage{margin:0;min-width:0;}
-.stage.wide{grid-column:1 / -1;}
-@media(max-width:880px){.stages{grid-template-columns:1fr;}.metrics{grid-template-columns:repeat(2,1fr);}}
-.s-head{display:flex;align-items:baseline;gap:12px;margin-bottom:6px;}
-.s-num{font-size:12px;font-weight:600;color:var(--faint);letter-spacing:1px;}
-.s-note{color:var(--muted);font-size:13px;margin:0 0 14px;}
+/* stepper: at-a-glance pipeline sequence */
+.stepper{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 20px;}
+.stepper .st{background:#fff;border:1px solid var(--line);border-radius:20px;padding:4px 12px;
+  font-size:12px;color:var(--muted);}
+.stepper .st b{color:var(--accent);font-weight:600;margin-right:5px;font-size:11px;}
+.stepper .sep{color:var(--faint);font-size:12px;}
 
-.excerpt{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px 26px;line-height:1.9;font-size:15px;}
+/* stages as a clean vertical sequence of cards */
+.stages{display:flex;flex-direction:column;gap:18px;}
+.stage{background:#fff;border:1px solid var(--line);border-radius:14px;padding:20px 22px;}
+.s-head{display:flex;align-items:center;gap:11px;}
+.s-num{flex:0 0 auto;width:26px;height:26px;border-radius:50%;background:var(--accentbg);color:var(--accent);
+  font-size:11.5px;font-weight:600;display:flex;align-items:center;justify-content:center;}
+.s-note{color:var(--muted);font-size:13px;margin:6px 0 0 37px;}
+
+/* 01 detect */
+.excerpt{background:var(--panel);border-radius:10px;padding:16px 18px;line-height:1.95;font-size:14.5px;margin-top:14px;}
 mark{padding:1px 5px;border-radius:4px;font-weight:500;}
 .legend{display:flex;gap:16px;margin-top:12px;font-size:12px;color:var(--muted);}
 .lg::before{content:"";display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;vertical-align:1px;}
 .lg-p::before{background:#5B7FA6;}.lg-l::before{background:#6f9a4a;}.lg-d::before{background:#c99a4a;}.lg-a::before{background:#7d72c4;}
 
-.deltas,.rels{list-style:none;padding:0;margin:0;}
-.deltas li,.rels li{padding:9px 0;border-bottom:1px solid var(--line);font-size:14px;}
+/* 02/03 lists, 04 relations */
+.deltas,.rels{list-style:none;padding:0;margin:14px 0 0;}
+.deltas li,.rels li{padding:8px 0;border-bottom:1px solid var(--line);font-size:14px;}
 .deltas li:last-child,.rels li:last-child{border-bottom:none;}
 .tag{display:inline-block;font-size:11px;padding:1px 8px;border-radius:20px;margin-right:6px;}
 .tag.ok{background:#e7f2e9;color:#2f6b3b;} .tag.warn{background:#fbeceb;color:#93362f;}
-.rel{display:inline-block;font-size:12px;color:#234E86;background:#E9F0FA;padding:1px 8px;border-radius:20px;margin:0 4px;}
-.ev{display:block;color:var(--faint);font-size:12.5px;margin-top:2px;font-style:italic;}
+.src{display:inline-block;font-size:9.5px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;
+  padding:1px 6px;border-radius:4px;margin-right:7px;}
+.src.rule{background:#eceef1;color:#5b636c;} .src.llm{background:var(--accentbg);color:var(--accent);}
+.rel{display:inline-block;font-size:12px;color:var(--accent);background:var(--accentbg);padding:1px 8px;border-radius:20px;margin:0 4px;}
+.ev{display:block;color:var(--faint);font-size:12px;margin-top:2px;font-style:italic;}
 
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(228px,1fr));gap:12px;}
-.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px 16px;}
-.card.flag{border-left:3px solid #b3261e;}
-.card .nm{font-size:15.5px;font-weight:600;}
-.card .forms{font-size:12px;color:var(--muted);margin:1px 0 9px;}
-.chip{display:inline-block;font-size:11px;padding:2px 8px;border-radius:20px;margin:0 4px 4px 0;}
-.c-person{background:#E9F0FA;color:#234E86;}.c-attr{background:#f0f0ee;color:#4b4b47;}.c-flag{background:#fbeceb;color:#7C2222;}
-.card .note{font-size:11.5px;color:#7C2222;margin-top:5px;line-height:1.5;}
+/* 05 entities */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:10px;margin-top:14px;}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:12px 14px;}
+.card.flag{border-left:3px solid #c0574f;}
+.card .nm{font-size:14.5px;font-weight:600;}
+.card .nm .cat{font-weight:400;font-size:11px;color:var(--muted);margin-left:4px;}
+.card .forms{font-size:11.5px;color:var(--muted);margin:1px 0 8px;}
+.chip{display:inline-block;font-size:11px;padding:1px 8px;border-radius:20px;margin:0 4px 4px 0;background:#eceef1;color:#4b5158;}
+.chip.g{background:#E9F0FA;color:#234E86;}
+.chip.warn{background:#fbeceb;color:#8a2f28;}
+.card .sug{font-size:11.5px;color:#6A4310;margin-top:5px;}
+.card .note{font-size:11px;color:#8a2f28;margin-top:5px;line-height:1.5;}
 
-.graph{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;}
-.sub-h{font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.6px;margin:20px 0 10px;}
-.locrow{display:flex;align-items:center;gap:10px;margin-bottom:8px;}
+/* 06 graph */
+.graph{padding-top:8px;}
+.glegend{display:flex;flex-wrap:wrap;gap:14px;justify-content:center;margin-top:14px;font-size:11.5px;color:var(--muted);}
+.glegend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;}
+.glegend .ring{color:#8a2f28;}
+.sub-h{font-size:11.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin:20px 0 9px;}
+.locrow{display:flex;align-items:center;gap:9px;margin-bottom:7px;}
 .arrow{font-size:12px;color:var(--faint);}
-.pills{display:flex;flex-wrap:wrap;gap:8px;}
-.pill{font-size:12.5px;padding:4px 11px;border-radius:20px;}
+.pills{display:flex;flex-wrap:wrap;gap:7px;}
+.pill{font-size:12px;padding:3px 10px;border-radius:20px;}
 .pill.loc{background:#EAF2E0;color:#315915;}.pill.date{background:#F8EFDD;color:#6A4310;}.pill.age{background:#EFEDFA;color:#413593;}
-.foot{font-size:12.5px;color:var(--muted);border-top:1px solid var(--line);padding-top:16px;margin-top:10px;}
+.foot{font-size:12.5px;color:var(--muted);border-top:1px solid var(--line);padding-top:16px;margin-top:24px;}
 """

@@ -30,10 +30,17 @@ PUBLIC_FIGURES = {
 }
 
 
-# Possessive / relational framing just before a name ("my Michelle", "our
-# James") signals a PRIVATE individual, even if the name matches a public
-# figure. Small trailing window before the mention.
-_OWNED_BEFORE = re.compile(r"\b(my|our|his|her|their)\s+(?:\w+\s+){0,2}$", re.I)
+# Signals that a name matching PUBLIC_FIGURES is actually a PRIVATE individual who
+# merely shares the name (so it must still be redacted): a first-person possessive
+# directly on the name ("my Beyonce"), a naming construction that introduces a
+# person ("her name is Beyonce", "a friend named Beyonce"), or an explicit
+# "no relation to the famous one" aside. Deliberately NARROW: third-person
+# ATTRIBUTIVE use of a famous name ("his Elvis impression", "my dad admired Obama")
+# is NOT a personal signal -- the old broad window over-redacted those. Kinship and
+# professional context are stronger signals and checked separately.
+_POSS_NAME = re.compile(r"\b(?:my|our)\s+$", re.I)
+_NAMING = re.compile(r"\b(?:name\s+(?:is|was)|named)\s+$", re.I)
+_NOT_FAMOUS = re.compile(r"^\W{0,3}(?:no relation|not the (?:famous|real|actual|celebrity))", re.I)
 
 
 PROFESSIONAL_CONTEXT = re.compile(
@@ -46,6 +53,23 @@ PROFESSIONAL_CONTEXT = re.compile(
     r"nanny|caregiver)\b", re.I)
 
 
+def _personal_signal(transcript: str, ent, kin_ids: set) -> bool:
+    """True when a name that matches the public-figure list is, in THIS transcript,
+    a private individual (a relative, someone with a professional role in the
+    interviewee's life, or a namesake introduced personally) -> must be redacted."""
+    if ent.entity_id in kin_ids:                          # the interviewee's relative
+        return True
+    for m in ent.mentions:
+        pre = transcript[max(0, m.start - 24):m.start]
+        if _POSS_NAME.search(pre) or _NAMING.search(pre):
+            return True
+        if PROFESSIONAL_CONTEXT.search(transcript[max(0, m.start - 60):m.end + 60]):
+            return True
+        if _NOT_FAMOUS.match(transcript[m.end:m.end + 40]):
+            return True
+    return False
+
+
 """
 Infer high level attributes about PERSON entities. Earlier, we've detected PERSON
 entities, clustered mentions, and built RELATED_TO edges and etc. 
@@ -55,6 +79,7 @@ def infer_person_attributes(
 ) -> None:
     kin_targets = {e.target for e in edges if e.relation == Relation.RELATED_TO}
     kin_sources = {e.source for e in edges if e.relation == Relation.RELATED_TO}
+    kin_ids = kin_targets | kin_sources
 
     for ent in person_entities:
         attrs = ent.attributes
@@ -81,20 +106,17 @@ def infer_person_attributes(
         forms_lower = {f.lower() for f in ent.sorted_mentions}  # lowercase everything
 
         if forms_lower & PUBLIC_FIGURES:
-            # if interviewee frames this name possessively ("my Michelle"), 
-            # it's a private person who happens to share the name so we DON'T
-            # replace it
-            owned = any(
-                _OWNED_BEFORE.search(transcript[max(0, m.start - 40):m.start])
-                for m in ent.mentions
-            )
-            if not owned:
+            # Default for a listed famous name is to KEEP it (it reveals nothing
+            # about the interviewee). Redact only when a personal signal says this
+            # is a private namesake -- leaking a private person is the unacceptable
+            # error; over-redacting a celebrity is the safe one.
+            if not _personal_signal(transcript, ent, kin_ids):
                 ent.subtype = "PUBLIC_FIGURE"
-                attrs["replace"] = False    # public figures usually stay
+                attrs["replace"] = False
                 continue
             ent.flag_entity(
-                "name matches a public figure but is used possessively; "
-                "treated as private"
+                "name matches a public figure but is used personally "
+                "(relative / professional / namesake); treated as private"
             )
 
         if ent.entity_id in kin_targets or ent.entity_id in kin_sources:

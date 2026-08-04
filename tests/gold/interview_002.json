@@ -34,5 +34,13 @@
   "locations": [
     {"text": "Los Angeles", "in_gazetteer": false},
     {"text": "Chicago", "in_gazetteer": false}
+  ],
+  "identifiers": [
+    {"text": "213-555-0147", "type": "PHONE"},
+    {"text": "hola@betoskitchen.com", "type": "EMAIL"},
+    {"text": "2003-88147", "type": "SSN_OR_ID"},
+    {"text": "@betos_kitchen", "type": "USERNAME_HANDLE"},
+    {"text": "janitor", "type": "OCCUPATION"},
+    {"text": "chef", "type": "OCCUPATION"}
   ]
 }

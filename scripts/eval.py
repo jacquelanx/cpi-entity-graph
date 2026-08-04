@@ -2,6 +2,13 @@
 Evaluation script for the knowledge graph part ONLY. The knowledge graph consumes
 detected spans from the detection stage; this file simulates a perfect detector and
 runs those spans through the knowledge graph pipeline.
+
+Relations are scored across BOTH layers: the deterministic ruleset always, and --
+when the LLM is enabled (KG_USE_LLM=1 with Ollama up) -- the verified LLM relation
+path (llm_layer.extract_pass -> relation_verify), added the same way the real
+pipeline adds it. The relation report breaks results down by provenance (rule vs
+llm) so the LLM's recall gain and its precision cost are both visible, and a
+regression in the LLM path is caught here instead of only in the demo.
 """
 
 from __future__ import annotations
@@ -23,13 +30,14 @@ os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 from dateutil import parser as dateparser
 from graph.loader import resolve_overlaps, make_mentions
 from graph.merge_strings import merge_person_mentions
+from graph.aliases import apply_alias_cues
 from graph.coref import apply_coref
 from graph.kinship import extract_kinship
 from graph.attributes import infer_person_attributes
 from graph.location_dates import (
     load_gazetteer, build_location_edges, resolve_date_entity, resolve_age_entity,
 )
-from graph.models import Entity, Mention, Relation
+from graph.models import Entity, Mention, Relation, Edge
 
 RUN_COREF = os.environ.get("EVAL_NO_COREF") != "1"
 
@@ -97,6 +105,35 @@ def _fmt(x):
     return "  n/a" if x is None else f"{x * 100:5.1f}%"
 
 
+def _relation_report(gold_rel: dict, pred_rel: dict, pred_src: dict) -> dict:
+    """Score predicted relations against gold and break the result down by which
+    layer produced each edge. `pred_src` maps a (source, target) pair to 'rule' or
+    'llm'. `llm_gain` is the set of gold relations the LLM found that the rules
+    missed -- the recall the LLM path actually buys."""
+    gold_set, pred_set = set(gold_rel), set(pred_rel)
+    tp = gold_set & pred_set
+    detail_ok = sum(1 for k in tp if gold_rel[k] == pred_rel[k])
+    rule_pred = {k for k in pred_set if pred_src.get(k) == "rule"}
+    llm_pred = {k for k in pred_set if pred_src.get(k) == "llm"}
+    rule_tp, llm_tp = rule_pred & gold_set, llm_pred & gold_set
+    return {
+        "gold": len(gold_rel), "pred": len(pred_set), "tp": len(tp),
+        "detail_ok": detail_ok,
+        "precision": _acc(len(tp), len(pred_set)),
+        "recall": _acc(len(tp), len(gold_rel)),
+        "detail_acc": _acc(detail_ok, len(tp)),
+        "misses": sorted(gold_set - pred_set),
+        "false_pos": sorted(pred_set - gold_set),
+        "bad_detail": sorted(k for k in tp if gold_rel[k] != pred_rel[k]),
+        # provenance breakdown
+        "rule_pred": len(rule_pred), "llm_pred": len(llm_pred),
+        "rule_tp": len(rule_tp), "llm_tp": len(llm_tp),
+        "rule_fp": len(rule_pred - gold_set), "llm_fp": len(llm_pred - gold_set),
+        "llm_gain": sorted(llm_tp - rule_tp),        # gold rels the LLM added over rules
+        "llm_false_pos": sorted(llm_pred - gold_set),
+    }
+
+
 def evaluate_one(tid: str) -> dict:
     text = (ROOT / "transcripts" / f"{tid}.txt").read_text(encoding="utf-8")
     gold = json.loads((ROOT / "gold" / f"{tid}.json").read_text(encoding="utf-8"))
@@ -106,6 +143,8 @@ def evaluate_one(tid: str) -> dict:
     mentions = make_mentions(tid, dets)
 
     persons, _ambig = merge_person_mentions(tid, mentions)
+    # rule-based alias/nickname merges (closed cue set), independent of coref
+    apply_alias_cues(text, persons)
 
     # Coreference stage (part 2 of clustering). Runs by default; folds coref
     # clusters into our person entities and can merge split name forms.
@@ -117,6 +156,20 @@ def evaluate_one(tid: str) -> dict:
     interviewee = Entity(entity_id=f"{tid}_e000", category="PERSON")
     edges = extract_kinship(text, persons, interviewee)
     infer_person_attributes(text, persons, edges)
+
+    # LLM relation path (verified). Mirrors graph/pipeline: additive, only when a
+    # (source, target) pair isn't already a rule edge, so rules stay authoritative.
+    # No-ops when the LLM is unavailable -> the rules-only column is unaffected.
+    if _LLM is not None and _LLM.available():
+        from llm_layer import extract_pass
+        llm_rels = extract_pass(text, persons, interviewee, _LLM)
+        have = {(e.source, e.target) for e in edges if e.relation == Relation.RELATED_TO}
+        for r in llm_rels:
+            if (r["source"], r["target"]) not in have:
+                edges.append(Edge(source=r["source"], target=r["target"],
+                                  relation=Relation.RELATED_TO, detail=r["detail"],
+                                  evidence=f"(llm) {r['evidence']}"))
+                have.add((r["source"], r["target"]))
 
     by_id = {e.entity_id: e for e in persons}
     by_id[interviewee.entity_id] = interviewee
@@ -174,22 +227,15 @@ def evaluate_one(tid: str) -> dict:
     # ---------- RELATIONS ----------
     gold_rel = {(r["source"], r["target"]): _canon_detail(r["detail"])
                 for r in gold["relations"]}
-    pred_rel = {}
+    pred_rel, pred_src = {}, {}
     for ed in edges:
         if ed.relation != Relation.RELATED_TO:
             continue
         s, t = ent_canon.get(ed.source, "?"), ent_canon.get(ed.target, "?")
         pred_rel[(s, t)] = _canon_detail(ed.detail)
-    tp = set(gold_rel) & set(pred_rel)
-    detail_ok = sum(1 for k in tp if gold_rel[k] == pred_rel[k])
-    R["rel"] = {"gold": len(gold_rel), "pred": len(pred_rel), "tp": len(tp),
-                "detail_ok": detail_ok,
-                "precision": _acc(len(tp), len(pred_rel)),
-                "recall": _acc(len(tp), len(gold_rel)),
-                "detail_acc": _acc(detail_ok, len(tp)),
-                "misses": sorted(set(gold_rel) - set(pred_rel)),
-                "false_pos": sorted(set(pred_rel) - set(gold_rel)),
-                "bad_detail": sorted(k for k in tp if gold_rel[k] != pred_rel[k])}
+        # provenance: LLM-added edges are tagged "(llm)" in their evidence
+        pred_src[(s, t)] = "llm" if str(ed.evidence).startswith("(llm)") else "rule"
+    R["rel"] = _relation_report(gold_rel, pred_rel, pred_src)
 
     # ---------- GENDER (only where gold gender known) ----------
     g_total = g_correct = g_wrong = g_missing = 0
@@ -304,6 +350,11 @@ def _print_one(R):
         print(f"      false pos : {r['false_pos']}")
     if r["bad_detail"]:
         print(f"      bad detail: {r['bad_detail']}")
+    if r["llm_pred"]:
+        print(f"      llm layer : {r['llm_pred']} edges -> +{r['llm_tp']} correct / "
+              f"{r['llm_fp']} false-pos  (recall gain: {r['llm_gain'] or 'none'})")
+        if r["llm_false_pos"]:
+            print(f"      llm f-pos : {r['llm_false_pos']}")
     print(f"  gender     : recall {_fmt(g['recall'])}  "
           f"(correct {g['correct']}/{g['total']}, wrong {g['wrong']}, missing {g['missing']})")
     print(f"  replace    : acc {_fmt(rp['accuracy'])}  "
@@ -336,6 +387,10 @@ def _print_aggregate(agg):
     print(f"  relation precision: {_fmt(_acc(r['tp'], r['pred']))}   "
           f"recall: {_fmt(_acc(r['tp'], r['gold']))}   "
           f"detail acc: {_fmt(_acc(r['detail_ok'], r['tp']))}")
+    if r.get("llm_pred"):
+        print(f"  llm relation path : {r['llm_pred']} edges -> +{r['llm_tp']} correct, "
+              f"{r['llm_fp']} false-pos  (rules alone: {r['rule_tp']} correct, "
+              f"{r['rule_fp']} false-pos)")
     print(f"  gender recall     : {_fmt(_acc(g['correct'], g['total']))}  "
           f"(wrong {g['wrong']}, missing {g['missing']})")
     print(f"  replace accuracy  : {_fmt(_acc(rp['correct'], rp['total']))}  "
