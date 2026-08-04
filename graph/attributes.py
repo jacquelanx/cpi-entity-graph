@@ -110,6 +110,12 @@ def infer_person_attributes(
             # about the interviewee). Redact only when a personal signal says this
             # is a private namesake -- leaking a private person is the unacceptable
             # error; over-redacting a celebrity is the safe one.
+            #
+            # This keep is PROVISIONAL: the closed PUBLIC_FIGURES list is not the
+            # sole authority. When the LLM layer is active, openworld_pass CO-SIGNS
+            # -- it raises redaction back on unless the model also affirms this is a
+            # public figure (see llm_layer/openworld.py). Rules-only behavior here is
+            # unchanged.
             if not _personal_signal(transcript, ent, kin_ids):
                 ent.subtype = "PUBLIC_FIGURE"
                 attrs["replace"] = False

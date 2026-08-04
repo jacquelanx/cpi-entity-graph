@@ -239,9 +239,10 @@ def run_pipeline(transcript_id, transcript, mentions, metadata=None,
     # attach the interviewee's own identifiers / age / DOB to the e000 node
     edges += _link_interviewee_pii(transcript, entities, interviewee, persons)
 
-    # LLM uses #2, #3, #4, #5
+    # LLM uses #2, #3, #4, #5, #6
     if llm is not None:
-        from llm_layer import openworld_pass, extract_pass, identifier_judge_pass
+        from llm_layer import (openworld_pass, extract_pass, identifier_judge_pass,
+                               pii_owner_pass)
         # #2: fill rule misses (public figure / location / anchor / absolute &
         # relative dates / age / FAMILY-PROFESSIONAL subtype)
         openworld_pass(transcript, entities, llm, interview_date=interview_date)
@@ -261,6 +262,19 @@ def run_pipeline(transcript_id, transcript, mentions, metadata=None,
         # #4: contextual judgment on direct identifiers (owner / occupation
         # identifying-ness) -- suggestions only, never lowers redaction
         identifier_judge_pass(transcript, entities, llm)
+        # #6: whose age / date-of-birth is it? The rule (_link_interviewee_pii)
+        # only reaches the interviewee's OWN age/dob; this names a relative's owner
+        # and adds an ATTRIBUTE_OF edge. Additive; a pair the rules already linked is
+        # skipped so the rule edge stays authoritative. Never touches redaction.
+        own_edges = pii_owner_pass(transcript, entities, interviewee, llm)
+        have_attr = {(e.source, e.target) for e in edges
+                     if e.relation == Relation.ATTRIBUTE_OF}
+        for src, tgt, detail, ev in own_edges:
+            if (src, tgt) not in have_attr:
+                edges.append(Edge(source=src, target=tgt,
+                                  relation=Relation.ATTRIBUTE_OF,
+                                  detail=detail, evidence=ev))
+                have_attr.add((src, tgt))
 
     info = {
         "interviewee": interviewee,

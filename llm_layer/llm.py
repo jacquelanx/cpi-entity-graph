@@ -142,12 +142,59 @@ def default_client() -> LLMClient:
     return _DEFAULT_CLIENT
 
 
-# Shared helper: short context snippets around an entity's mentions. Used by the
-# task modules (merge_adjudicate, openworld). 
+# Shared helper: context snippets around an entity's mentions. Used by the task
+# modules (merge_adjudicate, openworld). `radius`/`max_snips` are per-CALL so each
+# caller can size context to how non-local its judgment is (a public-figure call
+# needs far more than an age parse -- see the call sites). Two refinements over a
+# raw character slice:
+#   * snap each snippet OUTWARD to sentence boundaries, so the model reads whole
+#     sentences instead of fragments cut mid-word;
+#   * merge overlapping/adjacent snippets, so several nearby mentions don't waste
+#     tokens re-sending the same passage.
+# A soft char budget bounds the joined length so a wide radius can never silently
+# blow past the model's context window (num_ctx in judge()).
+_CTX_CHAR_BUDGET = 6000
+
+
 def _windows(transcript: str, entity, radius: int = 160, max_snips: int = 3):
-    out = []
+    from .extract import _sentences               # local: keep llm.py import-light
+    sents = _sentences(transcript) or [(0, len(transcript))]
+    n = len(transcript)
+
+    def sent_start(pos):
+        for (ss, se) in sents:
+            if ss <= pos < se:
+                return ss
+        return 0
+
+    def sent_end(pos):
+        for (ss, se) in sents:
+            if ss <= pos < se:
+                return se
+        return n
+
+    raw = []
     for m in entity.mentions[:max_snips]:
-        s = max(0, m.start - radius)
-        e = min(len(transcript), m.end + radius)
-        out.append("..." + transcript[s:e].strip() + "...")
+        a = max(0, m.start - radius)
+        b = min(n, m.end + radius)
+        raw.append((sent_start(a), sent_end(max(a, b - 1))))
+
+    raw.sort()
+    merged = []
+    for (a, b) in raw:
+        if merged and a <= merged[-1][1]:            # overlaps/touches previous
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+
+    out, used = [], 0
+    for (a, b) in merged:
+        seg = transcript[a:b].strip()
+        if not seg:
+            continue
+        seg = seg[:max(0, _CTX_CHAR_BUDGET - used)]  # soft budget: never overflow ctx
+        if not seg:
+            break
+        used += len(seg)
+        out.append(("" if a == 0 else "...") + seg + ("" if b >= n else "..."))
     return out

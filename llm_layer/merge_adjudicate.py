@@ -28,11 +28,13 @@ def adjudicate_same_person(client: LLMClient | None, transcript: str, a, b) -> d
         return None
     a_forms = ", ".join(a.sorted_mentions) or "?"
     b_forms = ", ".join(b.sorted_mentions) or "?"
+    # wider than the default: telling two same-named people apart (vs an explicit
+    # alias) benefits from more surrounding narrative than a single ~160-char keyhole.
     prompt = (
         f'Name A: "{a_forms}"\nContexts where A appears:\n'
-        + "\n".join(_windows(transcript, a))
+        + "\n".join(_windows(transcript, a, radius=300, max_snips=4))
         + f'\n\nName B: "{b_forms}"\nContexts where B appears:\n'
-        + "\n".join(_windows(transcript, b))
+        + "\n".join(_windows(transcript, b, radius=300, max_snips=4))
         + "\n\nDo Name A and Name B refer to the same real person?"
     )
     return client.judge(prompt, system=_SAME_PERSON_SYSTEM)
