@@ -15,8 +15,10 @@ For each candidate (source, target, rel, evidence) `verify_relation` returns:
   reject  -- refuted or out of scope; dropped.
 
 Refutations / drops:
-  * rel not a known kinship/social word            -> drops "musical idol", "distant relative"
   * either end is a public figure                  -> drops celebrity edges
+  * a rel word outside the kin/social vocabulary   -> NOT an edge, but (second-line
+    policy) surfaced as a review SUGGESTION tagged with the raw word, so an
+    out-of-table relation the rules can't score still reaches a human
   * a named/third-person possessor of the kin word -> drops "Carla's mom" read as
     the interviewee's mother, "Her husband, Ronnie" read as the interviewee's
   * whole-word grounding                           -> "ruth" no longer matches "ruthie"
@@ -194,14 +196,30 @@ def verify_relation(src_eid, tgt_eid, rel, evidence, ctx: RelationContext) -> _V
     if se is None or te is None or se is te:
         return _Verdict("reject")
 
-    canon = _canon_rel(rel)
-    if canon is None:
-        return _Verdict("reject")                       # not a kin/social word
-
     iv = ctx.interviewee
     for end in (se, te):
         if end is not iv and end.subtype == "PUBLIC_FIGURE":
             return _Verdict("reject")                   # no edges to/from celebrities
+
+    canon = _canon_rel(rel)
+    if canon is None:
+        # rel word is outside the known kin/social vocabulary table. The rules
+        # can't corroborate it, but the LLM proposed it with grounded evidence, so
+        # the second-line policy surfaces it as a REVIEW SUGGESTION (never an edge),
+        # tagged with the raw relationship word. A proposal with no usable word is
+        # dropped.
+        m = re.search(r"[a-z][a-z\-']+", (rel or "").lower())
+        if not m:
+            return _Verdict("reject")
+        raw = m.group(0)
+        if se is iv or te is iv:
+            named = te if se is iv else se
+            if named is iv:
+                return _Verdict("reject")
+            ev = ctx.sentence_text(named.mentions[0].start) if named.mentions else (evidence or "")
+            return _Verdict("suggest", iv.entity_id, named.entity_id, raw, ev)
+        ev = ctx.sentence_text(te.mentions[0].start) if te.mentions else (evidence or "")
+        return _Verdict("suggest", se.entity_id, te.entity_id, raw, ev)
 
     if se is iv or te is iv:
         named = te if se is iv else se

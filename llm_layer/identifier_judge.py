@@ -32,11 +32,20 @@ _SYS = (
     "You classify identifier spans in one window of an interview transcript. Each "
     "is tagged like [ID2 555-123-4567] or [ID3 nurse]. Using ONLY the text, for "
     'each id give: "owner" ("interviewee" if it belongs to the speaker/"I"/"my", '
-    '"other" if it belongs to someone else, else "unknown") and "identifying" '
+    '"other" if it belongs to someone else, else "unknown"); "identifying" '
     "(true ONLY for an OCCUPATION that is specific or rare enough to help identify "
-    "a particular person; false for common jobs and for phones/emails/IDs/handles). "
-    'Reply with ONLY JSON: {"ID2": {"owner": "...", "identifying": false}, ...}.'
+    "a particular person; false for common jobs and for phones/emails/IDs/handles); "
+    'and "kind" (what the span actually is: one of "phone", "email", "ssn", "id", '
+    '"handle", "occupation", "other"). '
+    'Reply with ONLY JSON: {"ID2": {"owner": "...", "identifying": false, '
+    '"kind": "phone"}, ...}.'
 )
+
+# map the LLM "kind" word onto the pipeline's entity categories, so we can tell
+# whether the model disagrees with the rule's typing of a malformed span.
+_KIND_TO_CAT = {"phone": "PHONE", "email": "EMAIL", "ssn": "SSN_OR_ID",
+                "id": "SSN_OR_ID", "handle": "USERNAME_HANDLE",
+                "occupation": "OCCUPATION"}
 
 
 def _tagged(transcript, ws, we, roster):
@@ -58,7 +67,8 @@ def identifier_judge_pass(transcript: str, entities: list, llm) -> None:
 
     gid_by_eid = {e.entity_id: i + 1 for i, e in enumerate(ids)}
     ent_by_gid = {i + 1: e for i, e in enumerate(ids)}
-    votes = defaultdict(lambda: {"owner": Counter(), "identifying": Counter()})
+    votes = defaultdict(lambda: {"owner": Counter(), "identifying": Counter(),
+                                 "kind": Counter()})
 
     for (ws, we) in _pack_windows(_sentences(transcript), _WINDOW_CHARS):
         here = [e for e in ids if any(ws <= m.start < we for m in e.mentions)]
@@ -80,6 +90,9 @@ def identifier_judge_pass(transcript: str, entities: list, llm) -> None:
                 votes[e.entity_id]["owner"][owner] += 1
             if v.get("identifying") is True:
                 votes[e.entity_id]["identifying"]["true"] += 1
+            kind = str(v.get("kind", "")).lower()
+            if kind in _KIND_TO_CAT:
+                votes[e.entity_id]["kind"][kind] += 1
 
     for e in ids:
         vo = votes[e.entity_id]
@@ -91,3 +104,13 @@ def identifier_judge_pass(transcript: str, entities: list, llm) -> None:
             e.attributes["identifying"] = True
             e.flag_entity("LLM: this occupation may be specific enough to identify "
                           "someone; review")
+        # second line for the normalization/typing regexes: only when the rule
+        # FLAGGED the span as malformed (e.g. "email failed to parse") do we let the
+        # LLM suggest what type it really is. Suggestion only -- the span stays
+        # replace=True regardless, so this never affects redaction.
+        if e.needs_review and vo["kind"]:
+            kind = vo["kind"].most_common(1)[0][0]
+            if _KIND_TO_CAT[kind] != e.category:
+                e.attributes["suggested_kind"] = kind
+                e.flag_entity(f"LLM suggests this identifier is a {kind}, not "
+                              f"{e.category} (rule flagged it); review")

@@ -22,7 +22,8 @@ import os
 import re
 from dateutil import parser as dateparser
 from .models import Entity, Edge, Relation
-from .merge_strings import merge_person_mentions
+from .sentences import sentence_spans
+from .merge_strings import merge_person_mentions, normalize
 from .aliases import apply_alias_cues
 from .coref import apply_coref
 from .kinship import extract_kinship, KINSHIP_GENDER
@@ -61,8 +62,7 @@ def _link_interviewee_pii(transcript, entities, interviewee, persons):
     graph can answer 'what PII belongs to the speaker?'. Conservative: an owner is
     claimed only on a clear first-person cue with no intervening relative or other
     named person -- otherwise ownership is left unset (safe)."""
-    stops = [0] + [m.end() for m in re.finditer(r"[.!?]", transcript)]
-    sents = list(zip(stops, stops[1:] + [len(transcript)]))
+    sents = sentence_spans(transcript)
 
     def sentence_of(pos):
         for s, e in sents:
@@ -92,6 +92,42 @@ def _link_interviewee_pii(transcript, entities, interviewee, persons):
                           detail=(ent.subtype or ent.category),
                           evidence=transcript[ss:se].strip()))
     return edges
+
+
+def _adjudicate_ambiguous(transcript, persons, llm):
+    """Second line for the clustering table (merge_strings containment rule): when
+    the rules leave a bare given name UNMERGED because it matched several full
+    names ('short name matches multiple long names'), ask the LLM which full-name
+    entity it belongs to and record a `suggested_merge_with` FLAG. Never auto-
+    merges -- identity changes stay a human decision, same policy as the alias
+    suggestions in extract.py."""
+    from llm_layer import adjudicate_same_person
+
+    def tokens(e):
+        toks = set()
+        for f in e.sorted_mentions:
+            toks |= set(normalize(f))
+        return toks
+
+    multi = [(e, tokens(e)) for e in persons if len(tokens(e)) >= 2]
+    for e in persons:
+        if "matches multiple long names" not in (e.review_reason or ""):
+            continue
+        etoks = tokens(e)
+        if len(etoks) != 1:
+            continue
+        token = next(iter(etoks))
+        for c, ctoks in multi:
+            if c is e or token not in ctoks:
+                continue
+            v = adjudicate_same_person(llm, transcript, e, c)
+            if v and bool(v.get("same")) and (
+                    v.get("confidence") == "high" or v.get("evidence")):
+                nm = c.sorted_mentions[0] if c.sorted_mentions else c.entity_id
+                e.attributes["suggested_merge_with"] = nm
+                e.flag_entity(f"LLM suggests this is {nm} (rule left the short name "
+                              f"ambiguous); review to merge")
+                break
 
 
 """
@@ -203,10 +239,14 @@ def run_pipeline(transcript_id, transcript, mentions, metadata=None,
     # attach the interviewee's own identifiers / age / DOB to the e000 node
     edges += _link_interviewee_pii(transcript, entities, interviewee, persons)
 
-    # LLM uses #2, #3, #4
+    # LLM uses #2, #3, #4, #5
     if llm is not None:
         from llm_layer import openworld_pass, extract_pass, identifier_judge_pass
-        openworld_pass(transcript, entities, llm)        # #2: fill list misses
+        # #2: fill rule misses (public figure / location / anchor / absolute &
+        # relative dates / age / FAMILY-PROFESSIONAL subtype)
+        openworld_pass(transcript, entities, llm, interview_date=interview_date)
+        # #5: adjudicate person clusters the rules left ambiguous (flag only)
+        _adjudicate_ambiguous(transcript, persons, llm)
         # #3: windowed read-along -> attributes (in place), aliases (flagged in
         # place), and relations returned as tuples. Relations are added as edges
         # ONLY if the rules didn't already have that pair (rules stay authoritative).

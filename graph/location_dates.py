@@ -24,6 +24,7 @@ from datetime import timedelta, datetime
 from pathlib import Path
 from dateutil import parser as dateparser
 from .models import Edge, Entity, Relation
+from .sentences import sentence_spans
 
 
 """
@@ -347,8 +348,7 @@ def age_date_constraints(
     transcript: str, entities: list[Entity], window: int = 1
 ) -> list[Edge]:
 
-    boundaries = [0] + [m.end() for m in re.finditer(r"[.!?]", transcript)]
-    sentences = list(zip(boundaries, boundaries[1:] + [len(transcript)]))
+    sentences = sentence_spans(transcript)
 
     """Return the index of the sentence containing character position `pos`."""
     def sentence_of(pos: int) -> int:

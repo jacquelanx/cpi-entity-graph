@@ -187,6 +187,8 @@ def stage_entities(case) -> str:
             sug.append(f"gender? {a['suggested_gender']}")
         if a.get("suggested_role"):
             sug.append(f"role &ldquo;{escape(a['suggested_role'])}&rdquo;")
+        if a.get("suggested_subtype"):
+            sug.append(f"maybe {escape(str(a['suggested_subtype']).lower())}")
         if a.get("candidate_public_figure"):
             sug.append("maybe public figure")
         if a.get("suggested_merge_with"):

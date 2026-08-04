@@ -14,9 +14,9 @@ last stage.
 """
 
 from __future__ import annotations
-import re
 from .models import Entity
 from .merge_strings import normalize
+from .sentences import sentence_spans
 from llm_layer import adjudicate_same_person
 from fastcoref import FCoref
 
@@ -29,10 +29,9 @@ def _overlapping_entity(entities: list[Entity], start: int, end: int):
     return None
 
 
-"""(start, end) for each sentence, split on . ! ? (same scheme as elsewhere)."""
+"""(start, end) for each sentence (abbreviation-aware; see graph/sentences.py)."""
 def _sentence_bounds(transcript: str) -> list[tuple[int, int]]:
-    stops = [0] + [m.end() for m in re.finditer(r"[.!?]", transcript)]
-    return list(zip(stops, stops[1:] + [len(transcript)]))
+    return sentence_spans(transcript)
 
 
 def _sent_index(bounds: list[tuple[int, int]], pos: int) -> int:

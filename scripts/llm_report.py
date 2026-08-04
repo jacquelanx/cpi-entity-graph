@@ -77,16 +77,33 @@ def reconcile_items(case):
             sugg.append({"kind": "public", "text": nm,
                          "detail": f"LLM: maybe a public figure "
                                    f"({a['candidate_public_figure']}) — keep unredacted?"})
+        if a.get("suggested_subtype"):
+            sugg.append({"kind": "subtype", "text": nm,
+                         "detail": f"LLM: likely {a['suggested_subtype']} "
+                                   f"(rule left the subtype unset)"})
         if a.get("suggested_type"):
             d = f"LLM location type: {a['suggested_type']}"
             if a.get("suggested_parent"):
                 d += f", in {a['suggested_parent']}"
             sugg.append({"kind": "location", "text": nm, "detail": d})
-        if a.get("suggested_value"):
-            d = f"LLM anchor date: {a['suggested_value']}"
-            if a.get("suggested_event"):
-                d += f" ({a['suggested_event']})"
-            sugg.append({"kind": "anchor", "text": nm, "detail": d})
+        if a.get("suggested_value") is not None:
+            if e.category == "AGE":
+                sugg.append({"kind": "age", "text": nm,
+                             "detail": f"LLM age: {a['suggested_value']} "
+                                       f"(rule could not parse it)"})
+            elif e.category == "DATE_ANCHOR":
+                d = f"LLM anchor date: {a['suggested_value']}"
+                if a.get("suggested_event"):
+                    d += f" ({a['suggested_event']})"
+                sugg.append({"kind": "anchor", "text": nm, "detail": d})
+            else:
+                sugg.append({"kind": "date", "text": nm,
+                             "detail": f"LLM date: {a['suggested_value']} "
+                                       f"(rule could not resolve it)"})
+        if a.get("suggested_kind"):
+            sugg.append({"kind": "identifier", "text": nm,
+                         "detail": f"LLM: this identifier looks like a "
+                                   f"{a['suggested_kind']} (rule flagged it)"})
         if a.get("suggested_relation"):
             sr = a["suggested_relation"]
             sugg.append({"kind": "relation", "text": nm,

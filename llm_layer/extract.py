@@ -48,9 +48,60 @@ _KIN_WORDS = {
 }
 
 
+# Abbreviation-aware sentence segmentation. This is a deliberate mirror of
+# graph/sentences.py:sentence_spans -- llm_layer imports nothing from `graph`
+# (one-way graph -> llm_layer dependency), so the small pure function is copied
+# here rather than imported. Keep the two in sync. Used by this module and by
+# relation_verify (which imports `_sentences` from here).
+_ABBREV = {
+    "mr", "mrs", "ms", "mx", "dr", "prof", "st", "sr", "jr", "rev", "fr",
+    "hon", "gov", "sen", "rep", "pres", "capt", "sgt", "lt", "col", "gen",
+    "cmdr", "cpl", "det", "ofc", "supt", "atty", "messrs", "mmes",
+    "etc", "vs", "al", "inc", "ltd", "co", "corp", "dept", "est", "fig",
+    "no", "nos", "vol", "pp", "approx", "apt", "ave", "blvd", "rd", "ste",
+    "cf", "viz", "ibid",
+}
+_WORD_BEFORE_DOT = re.compile(r"([A-Za-z][A-Za-z'&.]*)$")
+_INITIALISM = re.compile(r"^[a-z](?:\.[a-z])+$")
+_TERMINATORS = ".?!"
+_CLOSERS = "\"'”’)]"
+
+
+def _ends_sentence(text, seg_start, dot, run):
+    if run != ".":
+        return set(run) != {"."}                     # ellipsis "..." -> not a boundary
+    n = len(text)
+    if 0 < dot < n - 1 and text[dot - 1].isdigit() and text[dot + 1].isdigit():
+        return False                                 # decimal number
+    wb = _WORD_BEFORE_DOT.search(text[seg_start:dot])
+    if wb:
+        tok = wb.group(1).lower()
+        if tok in _ABBREV or len(tok) == 1 or _INITIALISM.match(tok):
+            return False                             # abbreviation / initial / acronym
+    return True
+
+
 def _sentences(text: str):
-    stops = [0] + [m.end() for m in re.finditer(r"[.!?]", text)]
-    return list(zip(stops, stops[1:] + [len(text)]))
+    n = len(text)
+    spans, start, i = [], 0, 0
+    while i < n:
+        if text[i] in _TERMINATORS:
+            j = i
+            while j < n and text[j] in _TERMINATORS:
+                j += 1
+            if _ends_sentence(text, start, i, text[i:j]):
+                end = j
+                while end < n and text[end] in _CLOSERS:
+                    end += 1
+                spans.append((start, end))
+                start = i = end
+                continue
+            i = j
+            continue
+        i += 1
+    if start < n:
+        spans.append((start, n))
+    return spans
 
 
 def _pack_windows(sents, budget):
