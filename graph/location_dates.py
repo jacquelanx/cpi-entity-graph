@@ -124,6 +124,11 @@ ANCHOR_EVENTS = {
     "london olympics": "2012-07-27",
 }
 
+def _strip_article(s: str) -> str:
+    """Drop a leading article so anchor matching is article-insensitive."""
+    return re.sub(r"^(?:the|a|an)\s+", "", s.strip())
+
+
 # Fixed default for dateutil so missing components resolve DETERMINISTICALLY
 # (missing day -> 1, missing month -> January) instead of dateutil silently
 # defaulting to "today", which made "March 1990" resolve to today's day-of-month
@@ -212,9 +217,14 @@ def resolve_date_entity(entity: Entity, interview_date) -> None:
 
     if entity.category == "DATE_ANCHOR":
         attrs["shiftable"] = False          # public events do not move
-        # longest phrase first so "hurricane katrina" wins over "katrina"
+        # Match article-insensitively: a detected span often drops the leading
+        # article ("Great Recession" vs the table key "the great recession"), which
+        # used to break the substring match. Longest phrase first so "hurricane
+        # katrina" still wins over "katrina".
+        text_na = _strip_article(text)
         for phrase, iso in sorted(ANCHOR_EVENTS.items(), key=lambda kv: -len(kv[0])):
-            if phrase in text:
+            pna = _strip_article(phrase)
+            if phrase in text or pna in text_na or pna in text:
                 attrs["resolved_value"] = iso
                 attrs["anchor_event"] = phrase
                 return

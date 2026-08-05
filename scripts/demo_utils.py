@@ -21,7 +21,8 @@ DATA_GAZ = REPO_ROOT / "data" / "gazetteer.csv"
 
 
 def all_tids():
-    return [f"interview_{i:03d}" for i in range(1, 6)]
+    # every transcript present, count-agnostic (was hardcoded interview_001..005)
+    return sorted(p.stem for p in (TESTS / "transcripts").glob("*.txt"))
 
 
 """Turn gold surface forms into detections (a stand-in perfect detector)."""

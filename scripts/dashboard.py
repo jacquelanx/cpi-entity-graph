@@ -1,5 +1,5 @@
 """
-Build ONE self-contained HTML dashboard covering all 5 sample transcripts.
+Build ONE self-contained HTML dashboard covering all sample transcripts.
 Run this dashboard with the following command:
 ./venv/bin/python3 scripts/dashboard.py
 (Might take a minute to load)
@@ -7,6 +7,7 @@ Run this dashboard with the following command:
 
 from __future__ import annotations
 import importlib.util
+import os
 import sys
 import webbrowser
 from html import escape
@@ -22,11 +23,8 @@ OUT = REPO_ROOT / "tests" / "pipeline_report.html"
 
 # short labels for the tabs
 TITLES = {
-    "interview_001": "New Orleans, family & the storm",
-    "interview_002": "Immigrant family & the restaurant",
-    "interview_003": "Raised by grandparents; the service",
-    "interview_004": "Recovery & the people who helped",
-    "interview_005": "A garage on Desire Street",
+    "interview_001": "Gulf Coast Vietnamese shrimping family",
+    "interview_002": "Appalachian coal-mining family",
 }
 
 
@@ -41,10 +39,13 @@ def _load_eval():
 def build():
     kg_eval = _load_eval()
     tabs, panels = [], []
+    tot_leaks = tot_over = 0
     for idx, tid in enumerate(all_tids()):
         print(f"  processing {tid} ...", flush=True)
         case = load_case(tid, trace=True)
         metrics = kg_eval.evaluate_one(tid)
+        tot_leaks += metrics["replace"]["leaks"]
+        tot_over += metrics["cluster"]["over_merges"]
         active = " active" if idx == 0 else ""
         num = tid.split("_")[1]
         tabs.append(
@@ -79,18 +80,19 @@ def build():
      recall for end-to-end numbers.</p>
   <div class="tabs">{''.join(tabs)}</div>
   {''.join(panels)}
-  <p class="foot">Across all 5 transcripts the pipeline produced <b>0 privacy leaks</b> and
-     <b>0 silent over-merges</b>. Uncertain cases (nickname aliases, shared first names, coref
-     suggestions) are flagged for review rather than acted on silently.</p>
+  <p class="foot">Across all {len(tabs)} transcripts the pipeline produced <b>{tot_leaks} privacy leaks</b> and
+     <b>{tot_over} over-merges</b> (rules-only view). Uncertain cases (nickname aliases, shared first
+     names, coref suggestions) are flagged for review rather than acted on silently.</p>
 </div>{js}</body></html>"""
 
 
 def main():
-    print("Building dashboard (pipeline + coref for 5 transcripts)...")
+    print("Building dashboard (pipeline + coref)...")
     OUT.write_text(build(), encoding="utf-8")
     print(f"Wrote {OUT}")
     try:
-        webbrowser.open(OUT.as_uri())
+        if os.environ.get("KG_NO_OPEN") != "1":
+            webbrowser.open(OUT.as_uri())
     except Exception:
         print("(open the file above in a browser)")
 

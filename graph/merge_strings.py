@@ -117,11 +117,31 @@ class _UnionFind:
         self.parent[self.find(a)] = self.find(b)
 
 
+def _llm_says_distinct(persons, uf, bare_root, cand_root, transcript, llm) -> bool:
+    """Ask the LLM adjudicator whether the bare-name group and the full-name group are
+    the SAME person. Return True ONLY on a confident 'different' verdict -> veto the
+    containment merge. Any other outcome (same / unsure / no verdict) allows the merge,
+    so rules-only behavior and clustering recall are preserved."""
+    from llm_layer import adjudicate_same_person
+    bare = Entity(entity_id="_bare", category="PERSON",
+                  mentions=[persons[j] for j in range(len(persons)) if uf.find(j) == bare_root])
+    cand = Entity(entity_id="_cand", category="PERSON",
+                  mentions=[persons[j] for j in range(len(persons)) if uf.find(j) == cand_root])
+    v = adjudicate_same_person(llm, transcript, bare, cand)
+    return bool(v) and v.get("same") is False and v.get("confidence") == "high"
+
+
 """
 Group PERSON/NICKNAME mentions into entities. Returns tuple in the form of
 (person_entities, ambiguous_mentions_left_unmerged).
+
+When `transcript` and `llm` are supplied and the LLM is up, a bare given name that
+would merge into a SINGLE full-name candidate is first adjudicated: the merge is
+vetoed only if the LLM is confident the two are different people (e.g. uncle "Bill"
+vs. foreman "Bill Ratliff"). With no LLM this is a no-op -- the rule merges as before.
 """
-def merge_person_mentions(transcript_id: str, mentions: list[Mention]) -> tuple[list[Entity], list[Mention]]:
+def merge_person_mentions(transcript_id: str, mentions: list[Mention],
+                          transcript: str | None = None, llm=None) -> tuple[list[Entity], list[Mention]]:
     persons = [m for m in mentions if m.entity_type in ("PERSON", "NICKNAME")]
     if not persons:
         return [], []
@@ -160,6 +180,9 @@ def merge_person_mentions(transcript_id: str, mentions: list[Mention]) -> tuple[
         if len(key) >= 2:
             multi_groups.setdefault(uf.find(i), set()).update(key)
 
+    llm_on = transcript is not None and llm is not None and llm.available()
+    withheld_roots: set[int] = set()      # bare groups the LLM judged distinct
+    veto_memo: dict[tuple, bool] = {}
     for i, key in enumerate(canon):
         if len(key) != 1:
             continue
@@ -167,7 +190,17 @@ def merge_person_mentions(transcript_id: str, mentions: list[Mention]) -> tuple[
         candidates = {root for root, toks in multi_groups.items() if token in toks}
         candidates.discard(uf.find(i))
         if len(candidates) == 1:
-            uf.union(i, candidates.pop())
+            cand = candidates.pop()
+            bare_root = uf.find(i)
+            if llm_on:
+                mk = (bare_root, cand)
+                if mk not in veto_memo:
+                    veto_memo[mk] = _llm_says_distinct(persons, uf, bare_root, cand,
+                                                       transcript, llm)
+                if veto_memo[mk]:
+                    withheld_roots.add(bare_root)     # keep the bare name separate
+                    continue
+            uf.union(i, cand)
         elif len(candidates) > 1:
             ambiguous.append(persons[i])
 
@@ -178,7 +211,7 @@ def merge_person_mentions(transcript_id: str, mentions: list[Mention]) -> tuple[
         groups.setdefault(uf.find(i), []).append(i)
 
     entities = []
-    for n, (_, idxs) in enumerate(
+    for n, (root, idxs) in enumerate(
         sorted(groups.items(), key=lambda kv: min(persons[i].start for i in kv[1]))
     ):
         group = [persons[i] for i in idxs]
@@ -194,5 +227,8 @@ def merge_person_mentions(transcript_id: str, mentions: list[Mention]) -> tuple[
         if any(canon[i] in collision_keys for i in idxs):
             e.flag_entity("bare given name also appears with a title elsewhere; "
                           "possible distinct people")
+        if root in withheld_roots:
+            e.flag_entity("containment merge withheld: LLM judged this a different "
+                          "person from a same-named fuller name; kept separate")
         entities.append(e)
     return entities, ambiguous

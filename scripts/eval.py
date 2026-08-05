@@ -142,7 +142,7 @@ def evaluate_one(tid: str) -> dict:
     dets = resolve_overlaps(_build_detections(text, gold))
     mentions = make_mentions(tid, dets)
 
-    persons, _ambig = merge_person_mentions(tid, mentions)
+    persons, _ambig = merge_person_mentions(tid, mentions, text, _LLM)
     # rule-based alias/nickname merges (closed cue set), independent of coref
     apply_alias_cues(text, persons)
 
@@ -376,11 +376,11 @@ def _accumulate(agg, R):
                 bucket[f] = bucket.get(f, 0) + v
 
 
-def _print_aggregate(agg):
+def _print_aggregate(agg, n=None):
     c, r, g, rp, d, a, l = (agg["cluster"], agg["rel"], agg["gender"], agg["replace"],
                             agg["dates"], agg["ages"], agg["locations"])
     print("\n" + "=" * 74)
-    print("AGGREGATE (micro-averaged over 5 transcripts)\n")
+    print(f"AGGREGATE (micro-averaged over {n if n is not None else '?'} transcripts)\n")
     print(f"  clustering recall : {_fmt(_acc(c['exact'], c['gold']))}  "
           f"(exact {c['exact']}/{c['gold']}, over-merges {c['over_merges']}, "
           f"splits {c['splits']}, coref-merges {c['coref_merges']})")
@@ -405,11 +405,12 @@ def _print_aggregate(agg):
 def main():
     agg = {}
     print("=" * 74)
-    for i in range(1, 6):
-        R = evaluate_one(f"interview_{i:03d}")
+    tids = sorted(p.stem for p in (ROOT / "transcripts").glob("*.txt"))
+    for tid in tids:
+        R = evaluate_one(tid)
         _print_one(R)
         _accumulate(agg, R)
-    _print_aggregate(agg)
+    _print_aggregate(agg, len(tids))
 
 
 if __name__ == "__main__":

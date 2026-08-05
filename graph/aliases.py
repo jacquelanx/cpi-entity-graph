@@ -36,7 +36,9 @@ _PRON = r"(?i:him|his|he|her|hers|she|them|their|they)"
 _SUBJ = rf"(?:{_PRON}|{_NAME_TOKEN})"
 _Q = r"[\"'“”‘’]?"
 
-_CALL = re.compile(r"(?i:\bcall(?:ed|s)?)\s+(" + _SUBJ + r")\s+" + _Q + r"(" + _NAME + r")" + _Q)
+# call / called / calls / calling / callin' -- "calling" was previously missed
+# ("everybody ended up calling him Sonny"), leaving the alias unmerged.
+_CALL = re.compile(r"(?i:\bcall(?:ed|s|ing|in['’]?)?)\s+(" + _SUBJ + r")\s+" + _Q + r"(" + _NAME + r")" + _Q)
 _AS = re.compile(r"(?i:\b(?:knew|know|knows|known))\s+(" + _SUBJ + r")(?i:\s+as\s+)"
                  + _Q + r"(" + _NAME + r")" + _Q)
 _REAL = re.compile(r"(" + _SUBJ + r")(?i:\s+real\s+name\s+(?:was|is)\s+)" + _Q + r"(" + _NAME + r")" + _Q)

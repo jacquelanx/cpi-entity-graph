@@ -6,7 +6,7 @@ extract, per window, several things at once -- instead of only judging narrow,
 pre-filtered candidates. In each window every detected person is tagged by a
 stable id (`[P3 Ronnie]`; `P0` is the interviewee), and the model returns ONE
 JSON with:
-  - attributes  : gender + role per person
+  - attributes  : gender + role + ethnicity per person
   - relations   : family/social relations between people (incl. the interviewee)
   - aliases     : id pairs that are the SAME person written differently
 
@@ -16,6 +16,8 @@ per-person attribute pass into the same call (fewer calls, not more).
 Reconciliation stays conservative and ON TOP of the rules (the rules run first
 and stay authoritative). Per the chosen policy:
   - attributes -> agree/keep, unset->suggest (`suggested_*`), conflict->flag.
+    Ethnicity has no rule source, so it is ALWAYS a suggestion: a quote-grounded
+    `stated` label, or an `inferred` guess tagged low-confidence (`ethnicity_basis`).
   - relations  -> APPLIED as edges, but ONLY when the evidence quote is verifiably
     present in the transcript (anti-hallucination) and the rules didn't already
     have that edge. Additive / non-destructive.
@@ -139,8 +141,15 @@ _SYS = (
     "[P3 Ronnie]; P0 is the interviewee (the speaker -- 'I', 'me', 'my'). Using "
     "ONLY this text, and referring to people ONLY by their given ids, extract:\n"
     '- "attributes": object mapping each tagged person id to '
-    '{"gender": "F"|"M"|"", "role": "<short role/relationship word or empty>"}. '
-    "Gender only when clear.\n"
+    '{"gender": "F"|"M"|"", "role": "<short role/relationship word or empty>", '
+    '"ethnicity": "<short free-text ethnicity/heritage label, e.g. Cuban, African '
+    'American, Vietnamese, Creole, or empty>", '
+    '"ethnicity_basis": "stated"|"inferred"|"", '
+    '"ethnicity_evidence": "<exact quote from THIS text if stated, else empty>"}. '
+    'Gender only when clear. For ethnicity use "stated" ONLY when the person '
+    "explicitly self-identifies or the text plainly states it, and put the exact "
+    'words in ethnicity_evidence; use "inferred" if you are merely guessing from a '
+    "name or surrounding context; leave ethnicity empty when you cannot tell.\n"
     '- "relations": list of family/social relations, each '
     '{"from": id, "rel": "<relationship word, e.g. son, aunt, wife, friend>", '
     '"to": id, "evidence": "<exact quote from THIS text>"}. Anchor on the "from" '
@@ -156,6 +165,18 @@ _SYS = (
 def _pid(s):
     m = re.fullmatch(r"[Pp]?(\d+)", str(s).strip())
     return int(m.group(1)) if m else None
+
+
+def _eth_evidenced(quote: str, label: str) -> bool:
+    """A 'stated' ethnicity must be BACKED by the quote -- the quote must actually
+    mention the ethnicity/heritage, not merely be real transcript text. (Before this
+    check the model could attach any verbatim-but-irrelevant quote and get 'stated'.)
+    True when a >=4-char token of the label appears in the quote, or a heritage cue
+    is present; otherwise the claim is demoted to 'inferred'."""
+    q = quote.lower()
+    if any(tok in q for tok in re.findall(r"[a-z]{4,}", label.lower())):
+        return True
+    return bool(re.search(r"\b(?:descent|heritage|ancestr|immigrant|immigrated|refugee)\b", q))
 
 
 def extract_pass(transcript: str, entities: list, interviewee, llm) -> list[dict]:
@@ -177,7 +198,14 @@ def extract_pass(transcript: str, entities: list, interviewee, llm) -> list[dict
         ent_by_pid[i] = e
         pid_by_eid[e.entity_id] = i
 
-    attr_votes = {e.entity_id: {"g": Counter(), "r": Counter()} for e in persons}
+    attr_votes = {e.entity_id: {"g": Counter(), "r": Counter(),
+                                "eth_stated": Counter(), "eth_inferred": Counter(),
+                                "eth_ev": {}} for e in persons}
+    # the interviewee (P0) gets an ethnicity vote bucket too -- first-person
+    # self-identification is the strongest ethnicity signal and was previously dropped.
+    attr_votes[interviewee.entity_id] = {"g": Counter(), "r": Counter(),
+                                         "eth_stated": Counter(), "eth_inferred": Counter(),
+                                         "eth_ev": {}}
     rel_votes: dict = defaultdict(lambda: {"rel": Counter(), "ev": ""})   # (from_eid,to_eid)
     alias_ev: dict = {}                                                    # frozenset(eids) -> quote
 
@@ -217,14 +245,30 @@ def extract_pass(transcript: str, entities: list, interviewee, llm) -> list[dict
         for k, v in (res.get("attributes") or {}).items():
             pid = _pid(k)
             e = ent_by_pid.get(pid)
-            if e is None or pid == 0 or not isinstance(v, dict):
+            if e is None or not isinstance(v, dict):
                 continue
-            g = (v.get("gender") or "").strip().upper()
-            if g in ("F", "M"):
-                attr_votes[e.entity_id]["g"][g] += 1
-            role = (v.get("role") or "").strip()
-            if role.lower() not in _ROLE_JUNK:
-                attr_votes[e.entity_id]["r"][role] += 1
+            av = attr_votes.get(e.entity_id)
+            if av is None:
+                continue
+            if pid != 0:                               # gender/role: named persons only
+                g = (v.get("gender") or "").strip().upper()
+                if g in ("F", "M"):
+                    av["g"][g] += 1
+                role = (v.get("role") or "").strip()
+                if role.lower() not in _ROLE_JUNK:
+                    av["r"][role] += 1
+            # ethnicity: recorded for EVERYONE incl. the interviewee (P0).
+            eth = (v.get("ethnicity") or "").strip()
+            if eth and eth.lower() not in _ROLE_JUNK:
+                basis = (v.get("ethnicity_basis") or "").strip().lower()
+                ev = verified(v.get("ethnicity_evidence")) if basis == "stated" else ""
+                if basis == "stated" and ev and _eth_evidenced(ev, eth):
+                    av["eth_stated"][eth] += 1
+                    av["eth_ev"].setdefault(eth, ev)
+                else:
+                    # "inferred", or a "stated" claim whose quote isn't in the text or
+                    # doesn't actually mention the ethnicity -> treat as a guess.
+                    av["eth_inferred"][eth] += 1
 
         for r in (res.get("relations") or []):
             if not isinstance(r, dict):
@@ -270,6 +314,24 @@ def extract_pass(transcript: str, entities: list, interviewee, llm) -> list[dict
                 e.attributes["gender_confirmed"] = True
         if v["r"]:
             e.attributes["suggested_role"] = v["r"].most_common(1)[0][0]
+
+    # ---- ethnicity (named persons AND the interviewee) -> always a SUGGESTION ----
+    # Prefer a STATED, quote-grounded label; otherwise fall back to an INFERRED guess
+    # tagged low-confidence. Name-based inference is unreliable and ethnicity is
+    # sensitive, so a consumer should treat 'inferred' as a soft hint only and
+    # 'stated' (with its evidence quote) as the trustworthy one.
+    for e in persons + [interviewee]:
+        v = attr_votes[e.entity_id]
+        if v["eth_stated"]:
+            label = v["eth_stated"].most_common(1)[0][0]
+            e.attributes["suggested_ethnicity"] = label
+            e.attributes["ethnicity_basis"] = "stated"
+            e.attributes["ethnicity_evidence"] = v["eth_ev"].get(label, "")
+        elif v["eth_inferred"]:
+            label = v["eth_inferred"].most_common(1)[0][0]
+            e.attributes["suggested_ethnicity"] = label
+            e.attributes["ethnicity_basis"] = "inferred"
+            e.attributes["ethnicity_confidence"] = "low"
 
     # ---- aliases -> FLAG only (never auto-merge) ----
     for (ae, be, ev) in alias_ev.values():

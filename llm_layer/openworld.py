@@ -31,8 +31,19 @@ ever used downstream (e.g. date-shifting); the LLM's is advisory.
 """
 
 from __future__ import annotations
+import re
 from datetime import date as _date
 from .llm import _windows
+
+_YEAR_RE = re.compile(r"\b(?:1[89]\d{2}|20\d{2})\b")
+_MONTH_RE = re.compile(r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)", re.I)
+
+
+def _year_only(text: str) -> bool:
+    """Source names a YEAR but no month -> compare only at year granularity in the
+    CHECK, so an LLM that over-specifies a day ('1921' -> '1921-05-19') can't raise a
+    spurious conflict against a correct year-only rule value."""
+    return bool(_YEAR_RE.search(text)) and not _MONTH_RE.search(text)
 
 
 # Per-category context sizing. A judgment's window is sized to how NON-LOCAL its
@@ -93,6 +104,16 @@ def _reconcile_date(e, llm_date, approximate, confidence, tol_days, large_days,
         return
     rd, ld = _parse_iso(rule_val), _parse_iso(llm_date)     # CHECK (rule resolved)
     if rd is None or ld is None:
+        return
+    src = e.mentions[0].text if e.mentions else ""
+    if _year_only(src):
+        # year-only source ("1921"): only a DIFFERENT YEAR is a real conflict
+        if rd.year == ld.year:
+            e.attributes["date_confirmed"] = True
+        elif confidence == "high":
+            e.attributes["llm_check_value"] = llm_date
+            e.flag_entity(f"LLM resolved this to {llm_date} (year {ld.year}), differs "
+                          f"from the rule year {rd.year}; rule value kept -- review")
         return
     diff = abs((rd - ld).days)
     if diff <= tol_days:

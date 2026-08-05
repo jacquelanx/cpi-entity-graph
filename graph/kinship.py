@@ -203,8 +203,15 @@ def extract_kinship(
 
 
     # Pattern 4: "Maria, my aunt" / "Denise, his sister" (appositive)
+    # STRICT closer: the appositive must END cleanly -- the kin word is followed by
+    # punctuation, "and"/"who"/"whom", or end of text. This rejects the ambiguous
+    # case where the kin word is actually the SUBJECT of the next clause
+    # ("Lewis, my Papaw would say ...", which is NOT an appositive). Anything that
+    # doesn't clear this bar produces NO rule edge and is left to the LLM relation
+    # second line (extract_pass -> relation_verify), which reads the full context.
     for m in re.finditer(
-        rf"({_NAME}),\s+(?i:(?:who\s+(?:is|was)\s+|who's\s+)?({_POSS}|{_PRON})\s+{_MOD}({KIN})\b)",
+        rf"({_NAME}),\s+(?i:(?:who\s+(?:is|was)\s+|who's\s+)?({_POSS}|{_PRON})\s+{_MOD}({KIN}))"
+        rf"\b(?=\s*(?:[,.;:!?)\]\"'’”]|and\b|who\b|whom\b|$))",
         transcript,
     ):
         target = _entity_at(person_entities, m.start(1), m.end(1))

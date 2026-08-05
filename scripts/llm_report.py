@@ -1,6 +1,6 @@
 """
 Interactive two-layer report: runs BOTH the deterministic ruleset and the local
-LLM layer on the 5 sample transcripts and builds one self-contained HTML page
+LLM layer on the sample transcripts and builds one self-contained HTML page
 with, per transcript:
   - the full pipeline walkthrough (all stages) + the entity graph,
   - a "Two-layer review" panel: agreements / suggestions / conflicts between the
@@ -33,11 +33,8 @@ import render
 
 OUT = REPO_ROOT / "tests" / "llm_report.html"
 TITLES = {
-    "interview_001": "New Orleans, family & the storm",
-    "interview_002": "Immigrant family & the restaurant",
-    "interview_003": "Raised by grandparents; the service",
-    "interview_004": "Recovery & the people who helped",
-    "interview_005": "A garage on Desire Street",
+    "interview_001": "Gulf Coast Vietnamese shrimping family",
+    "interview_002": "Appalachian coal-mining family",
 }
 
 
@@ -280,7 +277,7 @@ def build():
 <style>{render.CSS}{_EXTRA_CSS}</style></head>
 <body><div class="wrap">
   <h1>Rules &times; LLM &mdash; two-layer report</h1>
-  <p class="lede">Both the deterministic ruleset and the local LLM layer, run on all 5 sample
+  <p class="lede">Both the deterministic ruleset and the local LLM layer, run on all {len(tabs)} sample
      transcripts. Each tab shows the pipeline, the entity graph, and a two-layer review where
      suggestions and conflicts can be resolved. Metrics assume a perfect detector (upper bound).</p>
   <h2 style="font-size:16px;font-weight:600;margin:22px 0 8px">Performance: rules only vs rules + LLM</h2>
@@ -293,11 +290,12 @@ def build():
 
 
 def main():
-    print("Building two-layer report (rules + LLM on 5 transcripts)...")
+    print("Building two-layer report (rules + LLM)...")
     OUT.write_text(build(), encoding="utf-8")
     print(f"Wrote {OUT}")
     try:
-        webbrowser.open(OUT.as_uri())
+        if os.environ.get("KG_NO_OPEN") != "1":
+            webbrowser.open(OUT.as_uri())
     except Exception:
         print("(open the file above in a browser)")
 
