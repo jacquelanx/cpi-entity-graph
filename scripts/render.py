@@ -168,43 +168,190 @@ def stage_relations(case) -> str:
 
 
 # ---------- 5 · resolved entities & attributes ----------
+def _chip(text, cls=""):
+    cls = f"chip {cls}".strip()
+    return f"<span class='{cls}'>{text}</span>"
+
+
+# attribute keys that are surfaced explicitly below; the catch-all skips these so
+# it only ever shows things we haven't already rendered (keeps "show EVERYTHING"
+# honest without duplicating).
+_HANDLED_ATTR_KEYS = {
+    "given_name", "surname", "gender", "gender_confirmed", "replace", "role",
+    "subtype", "owner", "identifying", "suggested_gender", "gender_confirmed",
+    "suggested_role", "suggested_subtype", "suggested_subtype_confidence",
+    "candidate_public_figure", "candidate_public_figure_confidence",
+    "public_figure_cosign", "suggested_merge_with", "suggested_ethnicity",
+    "ethnicity_basis", "ethnicity_evidence", "ethnicity_confidence",
+    "suggested_relation", "merge_evidence", "replace",
+}
+
+
+def _owned_by_person(case):
+    """person entity_id -> [owned attribute entities] (AGE / DATE_OF_BIRTH /
+    PHONE / EMAIL / SSN_OR_ID / USERNAME_HANDLE / OCCUPATION), gathered from the
+    ATTRIBUTE_OF edges the pipeline builds, plus anything the LLM tagged
+    owner=='interviewee' that has no edge (e.g. OCCUPATION)."""
+    ents = {e.entity_id: e for e in case["entities"]}
+    iv = case["info"]["interviewee"].entity_id
+    owned, seen = {}, set()
+    for ed in case["edges"]:
+        if _relname(ed) == "ATTRIBUTE_OF" and ed.source in ents:
+            owned.setdefault(ed.target, []).append(ents[ed.source])
+            seen.add(ed.source)
+    for e in case["entities"]:
+        if e.entity_id in seen:
+            continue
+        if e.attributes.get("owner") == "interviewee":
+            owned.setdefault(iv, []).append(e)
+    return owned
+
+
+def _rel_to_interviewee(case):
+    """person entity_id -> relationship word to the interviewee (from RELATED_TO)."""
+    iv = case["info"]["interviewee"].entity_id
+    m = {}
+    for ed in case["edges"]:
+        if _relname(ed) != "RELATED_TO":
+            continue
+        if ed.source == iv:
+            m.setdefault(ed.target, ed.detail)
+        elif ed.target == iv:
+            m.setdefault(ed.source, ed.detail)
+    return m
+
+
+def _owned_chip(e):
+    """Render one owned attribute entity (age / DOB / occupation / identifier)."""
+    a = e.attributes
+    if e.category == "AGE":
+        v = a.get("value", a.get("suggested_value"))
+        txt = f"age {v}" if v is not None else f"age &ldquo;{escape(e.mentions[0].text)}&rdquo;"
+        if a.get("approximate") or a.get("suggested_approximate"):
+            txt += " (approx)"
+        return _chip(txt, "age")
+    if e.category == "DATE_OF_BIRTH":
+        v = a.get("resolved_value") or a.get("suggested_value") or e.mentions[0].text
+        return _chip(f"DOB {escape(str(v))}", "date")
+    if e.category == "OCCUPATION":
+        return _chip(f"occupation: {escape(str(a.get('occupation', e.mentions[0].text)))}", "occ")
+    label = _ID_LABEL.get(e.category, e.category)
+    return _chip(f"{escape(label)}: {escape(e.mentions[0].text)}", "id")
+
+
+def _person_card(e, case, owned, rel_map, is_iv=False) -> str:
+    a = e.attributes
+    chips, sugg, other = [], [], []
+
+    # ---- identity / demographics (rule-known) ----
+    rel = rel_map.get(e.entity_id)
+    if is_iv:
+        chips.append(_chip("role: interviewee", "ok"))
+    elif rel:
+        chips.append(_chip(f"relationship: {escape(str(rel))}", "rel-chip"))
+
+    if a.get("gender"):
+        g = _chip(f"gender {escape(str(a['gender']))}", "g")
+        if a.get("gender_confirmed"):
+            g = _chip(f"gender {escape(str(a['gender']))} &check;", "g ok")
+        chips.append(g)
+    if a.get("given_name"):
+        chips.append(_chip(f"given name: {escape(str(a['given_name']))}", "faint"))
+    if a.get("surname"):
+        chips.append(_chip(f"surname: {escape(str(a['surname']))}", "faint"))
+
+    # ethnicity (LLM-only; no rule source) -> show prominently, tagged by basis
+    eth = a.get("suggested_ethnicity")
+    if eth:
+        basis = a.get("ethnicity_basis", "")
+        tag = f" ({basis}{', low conf' if a.get('ethnicity_confidence') == 'low' else ''})" if basis else ""
+        chips.append(_chip(f"ethnicity: {escape(str(eth))}{escape(tag)}", "eth"))
+        if a.get("ethnicity_evidence"):
+            sugg.append(f"ethnicity evidence: &ldquo;{escape(str(a['ethnicity_evidence']))}&rdquo;")
+
+    # owned age / DOB / occupation / identifiers
+    for oe in owned.get(e.entity_id, []):
+        chips.append(_owned_chip(oe))
+
+    # replace / redaction decision
+    keep = a.get("replace", True) is False
+    if e.subtype == "PUBLIC_FIGURE" or keep:
+        chips.append(_chip("replace: no (kept)", "warn"))
+        if a.get("public_figure_cosign") is True:
+            chips.append(_chip("public figure &check; LLM co-signed", "ok"))
+    else:
+        chips.append(_chip("replace: yes", ""))
+
+    # ---- LLM suggestions ----
+    if a.get("suggested_gender"):
+        sugg.append(f"gender? {escape(str(a['suggested_gender']))}")
+    if a.get("suggested_role"):
+        sugg.append(f"role &ldquo;{escape(str(a['suggested_role']))}&rdquo;")
+    if a.get("suggested_subtype"):
+        conf = a.get("suggested_subtype_confidence")
+        sugg.append(f"maybe {escape(str(a['suggested_subtype']).lower())}"
+                    + (f" ({escape(str(conf))} conf)" if conf else ""))
+    if a.get("candidate_public_figure"):
+        conf = a.get("candidate_public_figure_confidence")
+        sugg.append(f"maybe public figure ({escape(str(a['candidate_public_figure']))}"
+                    + (f", {escape(str(conf))} conf" if conf else "") + ")")
+    if a.get("suggested_merge_with"):
+        sugg.append(f"maybe same person as {escape(str(a['suggested_merge_with']))}")
+    if a.get("suggested_relation"):
+        sr = a["suggested_relation"]
+        if isinstance(sr, dict):
+            sugg.append(f"maybe &lsquo;{escape(str(sr.get('detail', '')))}&rsquo; "
+                        f"with {escape(str(sr.get('with', '')))}")
+    if a.get("merge_evidence"):
+        sugg.append(f"merged on: &ldquo;{escape(str(a['merge_evidence']))}&rdquo;")
+
+    # ---- catch-all: any attribute we didn't explicitly render, so nothing hides ----
+    for k, v in a.items():
+        if k in _HANDLED_ATTR_KEYS or v is None or v == "":
+            continue
+        other.append(f"{escape(k.replace('_', ' '))}: {escape(str(v))}")
+
+    sug_html = (f"<div class='sug'>LLM: {' &middot; '.join(sugg)}</div>" if sugg else "")
+    other_html = (f"<div class='other'>{' &middot; '.join(other)}</div>" if other else "")
+    note = f"<div class='note'>&#9873; {escape(e.review_reason)}</div>" if e.needs_review else ""
+
+    if is_iv:
+        header_name, cat = "Interviewee", "PERSON &middot; you (speaker)"
+        forms = "no named mention &mdash; first-person &ldquo;I / me / my&rdquo;"
+    else:
+        header_name = _pname(e)
+        cat = "PERSON" + (f" &middot; {e.subtype}" if e.subtype else "")
+        forms = " / ".join(escape(f) for f in e.sorted_mentions)
+
+    card_cls = "card" + (" iv" if is_iv else "") + (" flag" if e.needs_review else "")
+    return (
+        f"<div class='{card_cls}'>"
+        f"<div class='nm'>{escape(header_name)}<span class='cat'>{cat}</span></div>"
+        f"<div class='forms'>{forms}</div>"
+        f"<div class='chips'>{''.join(chips)}</div>{sug_html}{other_html}{note}</div>")
+
+
 def stage_entities(case) -> str:
     iv = case["info"]["interviewee"].entity_id
+    owned = _owned_by_person(case)
+    rel_map = _rel_to_interviewee(case)
+
+    interviewee = next((e for e in case["entities"] if e.entity_id == iv), None)
+    people = [e for e in case["entities"]
+              if e.category == "PERSON" and e.entity_id != iv and e.mentions]
+
     cards = []
-    for e in case["entities"]:
-        if e.category != "PERSON" or e.entity_id == iv or not e.mentions:
-            continue
-        a = e.attributes
-        cat = "PERSON" + (f" &middot; {e.subtype}" if e.subtype else "")
-        chips = []
-        if a.get("gender"):
-            chips.append(f"<span class='chip g'>gender {a['gender']}</span>")
-        chips.append(f"<span class='chip'>replace: "
-                     f"{'yes' if a.get('replace', True) else 'no'}</span>")
+    if interviewee is not None:
+        cards.append(_person_card(interviewee, case, owned, rel_map, is_iv=True))
+    for e in people:
+        cards.append(_person_card(e, case, owned, rel_map))
 
-        sug = []
-        if a.get("suggested_gender"):
-            sug.append(f"gender? {a['suggested_gender']}")
-        if a.get("suggested_role"):
-            sug.append(f"role &ldquo;{escape(a['suggested_role'])}&rdquo;")
-        if a.get("suggested_subtype"):
-            sug.append(f"maybe {escape(str(a['suggested_subtype']).lower())}")
-        if a.get("candidate_public_figure"):
-            sug.append("maybe public figure")
-        if a.get("suggested_merge_with"):
-            sug.append(f"maybe same as {escape(str(a['suggested_merge_with']))}")
-        sug_html = f"<div class='sug'>LLM: {' &middot; '.join(sug)}</div>" if sug else ""
-
-        note = f"<div class='note'>&#9873; {escape(e.review_reason)}</div>" if e.needs_review else ""
-        forms = " / ".join(escape(f) for f in e.sorted_mentions)
-        cards.append(
-            f"<div class='card{' flag' if e.needs_review else ''}'>"
-            f"<div class='nm'>{escape(_pname(e))}<span class='cat'>{cat}</span></div>"
-            f"<div class='forms'>{forms}</div>{''.join(chips)}{sug_html}{note}</div>")
     body = f"<div class='cards'>{''.join(cards)}</div>"
     return section("05", "Resolve entities &amp; attributes", body,
-                   "Each detected person as one entity: rule-derived attributes, plus "
-                   "any LLM suggestions (grey vs. “LLM:” line).")
+                   "Everything known about each person &mdash; the interviewee (highlighted) "
+                   "and everyone they mention: demographics, owned age / DOB / occupation / "
+                   "identifiers, relationship, and the redaction decision. Rule-known values "
+                   "are solid chips; the &ldquo;LLM:&rdquo; line is advisory suggestions.")
 
 
 # ---------- 6 · direct identifiers ----------
@@ -446,16 +593,27 @@ mark{padding:1px 5px;border-radius:4px;font-weight:500;}
 .ev{display:block;color:var(--faint);font-size:12px;margin-top:2px;font-style:italic;}
 
 /* 05 entities */
-.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:10px;margin-top:14px;}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(248px,1fr));gap:10px;margin-top:14px;}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:12px 14px;}
 .card.flag{border-left:3px solid #c0574f;}
+.card.iv{background:#eef3f9;border:1px solid #cdddef;border-left:3px solid #2C4A6E;grid-column:1/-1;}
 .card .nm{font-size:14.5px;font-weight:600;}
 .card .nm .cat{font-weight:400;font-size:11px;color:var(--muted);margin-left:4px;}
 .card .forms{font-size:11.5px;color:var(--muted);margin:1px 0 8px;}
+.card .chips{display:flex;flex-wrap:wrap;}
 .chip{display:inline-block;font-size:11px;padding:1px 8px;border-radius:20px;margin:0 4px 4px 0;background:#eceef1;color:#4b5158;}
 .chip.g{background:#E9F0FA;color:#234E86;}
+.chip.ok{background:#e7f2e9;color:#2f6b3b;}
 .chip.warn{background:#fbeceb;color:#8a2f28;}
+.chip.eth{background:#F3E8F6;color:#6b2f7c;}
+.chip.occ{background:#E4F1F1;color:#245b5b;}
+.chip.id{background:#FBEAEA;color:#7C2222;}
+.chip.age{background:#EFEDFA;color:#413593;}
+.chip.date{background:#F8EFDD;color:#6A4310;}
+.chip.rel-chip{background:#E9F0FA;color:#234E86;}
+.chip.faint{background:#eef0f2;color:#7c828b;}
 .card .sug{font-size:11.5px;color:#6A4310;margin-top:5px;}
+.card .other{font-size:11px;color:#8a8f98;margin-top:5px;line-height:1.5;}
 .card .note{font-size:11px;color:#8a2f28;margin-top:5px;line-height:1.5;}
 
 /* 06 graph */
