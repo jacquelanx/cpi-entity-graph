@@ -146,6 +146,8 @@ _SYS = (
     'American, Vietnamese, Creole, or empty>", '
     '"ethnicity_basis": "stated"|"inferred"|"", '
     '"ethnicity_evidence": "<exact quote from THIS text if stated, else empty>"}. '
+    "Include P0 (the interviewee) when the speaker's OWN gender/ethnicity is clear "
+    'from first-person context (e.g. "I\'m a grandmother", "as a Vietnamese refugee"). '
     'Gender only when clear. For ethnicity use "stated" ONLY when the person '
     "explicitly self-identifies or the text plainly states it, and put the exact "
     'words in ethnicity_evidence; use "inferred" if you are merely guessing from a '
@@ -250,10 +252,14 @@ def extract_pass(transcript: str, entities: list, interviewee, llm) -> list[dict
             av = attr_votes.get(e.entity_id)
             if av is None:
                 continue
-            if pid != 0:                               # gender/role: named persons only
-                g = (v.get("gender") or "").strip().upper()
-                if g in ("F", "M"):
-                    av["g"][g] += 1
+            # gender: recorded for EVERYONE incl. the interviewee (P0) -- the
+            # interviewee's own gender was previously dropped, leaving it with no
+            # rule OR LLM source. Role stays named-persons-only (P0's role is just
+            # "interviewee").
+            g = (v.get("gender") or "").strip().upper()
+            if g in ("F", "M"):
+                av["g"][g] += 1
+            if pid != 0:
                 role = (v.get("role") or "").strip()
                 if role.lower() not in _ROLE_JUNK:
                     av["r"][role] += 1
@@ -300,7 +306,10 @@ def extract_pass(transcript: str, entities: list, interviewee, llm) -> list[dict
             alias_ev.setdefault(frozenset((ae.entity_id, be.entity_id)), (ae, be, ev))
 
     # ---- reconcile attributes (agree/keep, unset->suggest, conflict->flag) ----
-    for e in persons:
+    # Includes the interviewee for GENDER (its rule source is the first-person
+    # self-description in graph/attributes.infer_interviewee_gender); role is left
+    # to named persons only.
+    for e in persons + [interviewee]:
         v = attr_votes[e.entity_id]
         if v["g"]:
             g = v["g"].most_common(1)[0][0]
@@ -312,7 +321,7 @@ def extract_pass(transcript: str, entities: list, interviewee, llm) -> list[dict
                               f"{rg}; kept the rule value")
             else:
                 e.attributes["gender_confirmed"] = True
-        if v["r"]:
+        if e is not interviewee and v["r"]:
             e.attributes["suggested_role"] = v["r"].most_common(1)[0][0]
 
     # ---- ethnicity (named persons AND the interviewee) -> always a SUGGESTION ----

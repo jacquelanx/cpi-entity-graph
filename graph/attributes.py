@@ -53,6 +53,59 @@ PROFESSIONAL_CONTEXT = re.compile(
     r"nanny|caregiver)\b", re.I)
 
 
+# ------------------------- interviewee gender -------------------------
+# First-person self-description of the SPEAKER'S OWN gender. We deliberately use
+# ONLY gendered nouns the interviewee applies to THEMSELVES ("I'm a mother",
+# "call me Grandpa") -- never relational terms about other people ("my husband"),
+# which would encode an assumption about the speaker's own gender/orientation. The
+# trigger is anchored to an explicit first-person "I ..." (or a "call me <kin>"),
+# so third-person predicates ("he was known as a good man") never leak in.
+_IV_TRIG = (r"I['’]?m|I am|I was|I['’]ve been|I have been|I became|I['’]d become|"
+            r"I grew up|I ended up|I['’]ll be")
+# article / possessive introducing the predicate noun ("I'm a mother", "I'm her mom")
+_IV_SLOT = r"(?:a|an|the|her|his|their|your|our|my)\s+"
+# optional adjectives between the article and the noun ("I was the only girl")
+_IV_MOD = (r"(?:(?:only|oldest|youngest|eldest|middle|single|young|old|little|proud|"
+           r"new|first|second|working|widowed|divorced|stay[\s-]at[\s-]home|good|"
+           r"poor|country|former)\s+){0,3}")
+_IV_NOUN_F = (r"woman|girl|lady|gal|mother|mom|mommy|mum|mama|momma|grandmother|"
+              r"grandma|granny|nana|grandmom|gramma|daughter|sister|widow|housewife")
+_IV_NOUN_M = (r"man|boy|guy|gentleman|fella|fellow|father|dad|daddy|papa|grandfather|"
+              r"grandpa|granddad|gramps|son|brother|widower")
+_IV_SELF_F = re.compile(r"\b(?:" + _IV_TRIG + r")\s+" + _IV_SLOT + _IV_MOD +
+                        r"(?:" + _IV_NOUN_F + r")\b", re.I)
+_IV_SELF_M = re.compile(r"\b(?:" + _IV_TRIG + r")\s+" + _IV_SLOT + _IV_MOD +
+                        r"(?:" + _IV_NOUN_M + r")\b", re.I)
+# "(the kids) call me Grandma" / "everybody calls me Pop"
+_IV_CALLME_F = re.compile(r"\bcall(?:ed|s)?\s+me\s+(?:their\s+)?(?:mom|mommy|mama|"
+                          r"momma|mother|grandma|granny|nana|meemaw|gramma)\b", re.I)
+_IV_CALLME_M = re.compile(r"\bcall(?:ed|s)?\s+me\s+(?:their\s+)?(?:dad|daddy|papa|"
+                          r"pop|pops|papaw|pawpaw|grandpa|gramps|granddad)\b", re.I)
+
+
+def infer_interviewee_gender(transcript: str, interviewee: Entity) -> None:
+    """Set the interviewee's OWN gender (rule layer) from first-person self-
+    description. Conflicting cues (both F and M matched) leave it unset and raise a
+    review flag -- the LLM second line (extract_pass) then fills or confirms it.
+    Never overwrites a gender already set."""
+    if interviewee.attributes.get("gender"):
+        return
+    genders, evidence = set(), None
+    for rx, g in ((_IV_SELF_F, "F"), (_IV_CALLME_F, "F"),
+                  (_IV_SELF_M, "M"), (_IV_CALLME_M, "M")):
+        m = rx.search(transcript)
+        if m:
+            genders.add(g)
+            if evidence is None:
+                evidence = m.group(0).strip()
+    if len(genders) == 1:
+        interviewee.attributes["gender"] = next(iter(genders))
+        interviewee.attributes.setdefault("gender_evidence", evidence)
+    elif len(genders) == 2:
+        interviewee.flag_entity("conflicting first-person gender cues for the "
+                                "interviewee; left unset for the LLM / a human to resolve")
+
+
 def _personal_signal(transcript: str, ent, kin_ids: set) -> bool:
     """True when a name that matches the public-figure list is, in THIS transcript,
     a private individual (a relative, someone with a professional role in the

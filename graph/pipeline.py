@@ -27,7 +27,7 @@ from .merge_strings import merge_person_mentions, normalize
 from .aliases import apply_alias_cues
 from .coref import apply_coref
 from .kinship import extract_kinship, KINSHIP_GENDER
-from .attributes import infer_person_attributes
+from .attributes import infer_person_attributes, infer_interviewee_gender
 from .identifiers import build_identifier_entities
 from .location_dates import (
     load_gazetteer, build_location_edges,
@@ -212,6 +212,9 @@ def run_pipeline(transcript_id, transcript, mentions, metadata=None,
     # edges hang off it
     interviewee = Entity(entity_id=f"{transcript_id}_e000", category="PERSON",
                          attributes={"role": "interviewee", "replace": True})
+    # rule layer for the interviewee's own gender (first-person self-description);
+    # the LLM second line in extract_pass fills/confirms it below
+    infer_interviewee_gender(transcript, interviewee)
 
     edges = list(extract_kinship(transcript, persons, interviewee))
     infer_person_attributes(transcript, persons, edges)
