@@ -30,8 +30,10 @@ Fields proposed, and the rule table each one second-lines:
                shiftable        <- the hardcoded per-category default
   DATE_*       resolved_value   <- dateutil / relative-date regex
                approximate      <- the rule's own approximation marker
+               replace_date     <- the resolved `shiftable`
   AGE          value            <- word-number / decade maps
                approximate      <- ditto
+               replace_age      <- checks/ages.age_reading_refuted
 """
 
 from __future__ import annotations
@@ -131,9 +133,16 @@ _EVENT_SYS = (
     "are not certain of the exact date, or it is not a public event, leave the "
     "date empty. Also say whether the reference is APPROXIMATE: a named public "
     "event has one fixed calendar date and is NOT approximate, while a vague or "
-    "hedged reference to a period is. Reply with ONLY a JSON object: "
+    "hedged reference to a period is. Finally say whether printing this phrase "
+    "unchanged would help identify the particular person or family being "
+    "interviewed: a nationally or internationally known event (a presidential "
+    "election, 9/11, a major hurricane) identifies nobody, while an event known "
+    "only in one small community -- a named mine disaster, a valley flood, a local "
+    "mill closing -- pins the speaker to a few thousand people in one year. Reply "
+    "with ONLY a JSON object: "
     '{"event": "<name, or empty>", "date": "YYYY-MM-DD or empty", '
-    '"approximate": true or false, "confidence": "high" or "low"}.'
+    '"approximate": true or false, "identifying": true or false, '
+    '"confidence": "high" or "low"}.'
 )
 
 
@@ -160,9 +169,14 @@ _DATE_SYS = (
     "whether the expression refers to a WELL-KNOWN PUBLIC EVENT with a fixed "
     "calendar date (a hurricane, an election, an attack, a disaster) as opposed to "
     "a private date in this family's life; give the event's name if so, and leave "
-    "it empty otherwise. Reply with ONLY a JSON object: "
+    "it empty otherwise. Finally say whether printing this phrase unchanged would "
+    "help identify the particular person or family being interviewed: a date from "
+    "their own life (a birth, a wedding, a first day at work) does, and so does an "
+    "event known only in one small community, while a nationally known public event "
+    "identifies nobody. Reply with ONLY a JSON object: "
     '{"date": "YYYY-MM-DD or empty", "approximate": true or false, '
-    '"public_event": "<event name, or empty>", "confidence": "high" or "low"}.'
+    '"public_event": "<event name, or empty>", "identifying": true or false, '
+    '"confidence": "high" or "low"}.'
 )
 
 
@@ -182,12 +196,15 @@ def resolve_date(client, transcript, entity, interview_date=None) -> dict | None
 # Sub-classifier 5: an age the rule parser could not turn into a number.
 # --------------------------------------------------------------------------
 _AGE_SYS = (
-    "You read an age expression from an interview and return the age in whole "
-    "years as an integer. For a vague expression (\"in his sixties\", "
-    "\"twenty-something\") give a representative whole number and mark it "
-    "approximate. If you cannot tell, leave value null. Reply with ONLY a JSON "
-    'object: {"value": <integer or null>, "approximate": true or false, '
-    '"confidence": "high" or "low"}.'
+    "You read a number expression from an interview that a detector has labelled as "
+    "an AGE, and return the age in whole years as an integer. For a vague expression "
+    "(\"in his sixties\", \"twenty-something\") give a representative whole number "
+    "and mark it approximate. If you cannot tell, leave value null. Separately, say "
+    "whether the expression really is A PERSON'S AGE in this passage, as opposed to "
+    "a measurement, a duration, a quantity or a year (\"the water came up twelve "
+    "feet\", \"twelve rows of beans\", \"worked there twelve years\"). Reply with "
+    'ONLY a JSON object: {"value": <integer or null>, "approximate": true or false, '
+    '"is_an_age": true or false, "confidence": "high" or "low"}.'
 )
 
 
@@ -312,6 +329,11 @@ def openworld_propose(transcript: str, entities: list, llm, interview_date=None)
                 put(e, "approximate", bool(v["approximate"]), v.get("confidence"))
             elif v.get("date") and v.get("event"):
                 put(e, "approximate", False, v.get("confidence"))
+            # `replace_date`: the model's identifying-ness judgment, second-lined
+            # against the `shiftable` rule in `graph.second_line`. Passed explicitly
+            # as a bool so a legitimate False is not read as "no answer".
+            if isinstance(v.get("identifying"), bool):
+                put(e, "replace_date", bool(v["identifying"]), v.get("confidence"))
 
         elif e.category in ("DATE_ABSOLUTE", "DATE_OF_BIRTH", "DATE_RELATIVE"):
             v = resolve_date(llm, transcript, e, interview_date)
@@ -328,6 +350,8 @@ def openworld_propose(transcript: str, entities: list, llm, interview_date=None)
             # and `checks/dates.is_real_public_event` refuses that claim outright
             # for a non-anchor category.
             put(e, "shiftable", not bool(event), v.get("confidence"))
+            if isinstance(v.get("identifying"), bool):
+                put(e, "replace_date", bool(v["identifying"]), v.get("confidence"))
 
         elif e.category == "AGE":
             v = resolve_age(llm, transcript, e)
@@ -336,6 +360,14 @@ def openworld_propose(transcript: str, entities: list, llm, interview_date=None)
                     put(e, "value", v["value"], v.get("confidence"))
                 if v.get("approximate") is not None:
                     put(e, "approximate", bool(v["approximate"]), v.get("confidence"))
+                # `replace_age`: the model's own read of whether this span is really
+                # somebody's age. The rule keeps only a span `not_a_measurement`
+                # refuted, so this is the second opinion on exactly the condition the
+                # keep turns on -- "is it an age?" rather than "is an age
+                # identifying?", which would return True for every span and carry no
+                # information (the mistake `identifying` made on occupations).
+                if isinstance(v.get("is_an_age"), bool):
+                    put(e, "replace_age", bool(v["is_an_age"]), v.get("confidence"))
             a = resolve_age_anchor(llm, transcript, e)
             if a:
                 put(e, "stated_with", (a.get("date_text") or "").strip(),

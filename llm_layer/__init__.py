@@ -42,8 +42,10 @@ Each row is `field .... proposer <- the rule table it second-lines`:
                                                        season + spoken-year parsing /
                                                        ANCHOR_EVENTS
   shiftable (all date types) .... openworld_propose <- the rule's per-category default
+  date replace (all types) ...... openworld_propose <- the resolved `shiftable`
   approximate (incl. ANCHORS) ... openworld_propose <- the rule's own marker
   age value ..................... openworld_propose <- word-number / decade maps
+  age replace ................... openworld_propose <- checks/ages.age_reading_refuted
   age <-> date pairing .......... openworld_propose <- location_dates.age_date_constraints
   identifier owner .............. identifier_judge_pass <- pipeline._link_interviewee_pii
   identifier kind + normalization identifier_judge_pass <- identifiers._normalize

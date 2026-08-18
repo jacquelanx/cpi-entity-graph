@@ -24,8 +24,16 @@ failure is back:
                  "papaw" was present, so the speaker's grandmother got no relation
                  edge, no FAMILY subtype and no rule gender.
   measurements   "the water came up twelve feet" was adopted as somebody's AGE.
+  temporal       AGE and DATE entities reached surrogate generation with NO `replace`
+                 key -- AGE with no redaction directive of any kind -- so a consumer
+                 keying off `replace` printed the speaker's date of birth and every
+                 age verbatim.
   serialization  `Relation` did not compare equal to its wire value, so
                  `serialize.location_chain` never walked a LOCATED_IN edge.
+  artifact       nothing ever WROTE a graph to disk, and the writer that existed
+                 dropped the review gate and pinned its offsets to no particular
+                 text -- so a re-transcription would have spliced surrogates at the
+                 wrong positions with no error anywhere.
 """
 
 from __future__ import annotations
@@ -201,6 +209,110 @@ def test_measurements():
           parse_age_value("her eighties"), (85, True))
 
 
+# --------------------------------------------------- temporal redaction directive
+def _temporal_ctx(text, span, category, attrs=None, provenance=None):
+    """One AGE/DATE entity and a CheckContext around it."""
+    i = text.index(span)
+    e = Entity("t_X1", category,
+               mentions=[Mention("t", i, i + len(span), span, category, "t_m1")],
+               attributes=dict(attrs or {}))
+    e.provenance = dict(provenance or {})
+    iv = Entity("t_e000", "PERSON", attributes={"role": "interviewee"})
+    ctx = CheckContext(transcript=text, entities=[e], edges=[], interviewee=iv,
+                       entity=e)
+    return e, ctx
+
+
+def test_temporal_redaction():
+    print("\ntemporal redaction -- dates and ages carry a `replace` directive")
+    from graph.checks.ages import (age_reading_refuted,
+                                   keep_not_an_explicit_age_phrase,
+                                   keep_only_if_refuted_as_an_age)
+    from graph.checks.dates import (anchor_phrase_for, keep_is_not_a_local_event,
+                                    keep_only_if_public_event)
+    from graph.second_line import Resolution, _fields_for, _rule_value
+
+    # the shared table match the rule layer and three checkers now agree on
+    check("anchor phrase is article-insensitive",
+          anchor_phrase_for("the Great Recession"), "the great recession")
+    check("anchor phrase takes the longest match",
+          anchor_phrase_for("Hurricane Katrina"), "hurricane katrina")
+    check("a private date names no anchor",
+          anchor_phrase_for("March 4th, 1951"), "")
+
+    # ---- dates: the rule is the resolved `shiftable`, the keep gate is the table
+    e, ctx = _temporal_ctx("It was right after 9/11 that things changed.", "9/11",
+                           "DATE_ANCHOR", {"shiftable": False})
+    check("a non-shiftable anchor is the rule's keep",
+          _rule_value(e, POLICIES["replace_date"], ctx), False)
+    check("a national anchor may be kept",
+          (keep_only_if_public_event(False, ctx).passed,
+           keep_is_not_a_local_event(False, ctx).passed), (True, True))
+
+    e, ctx = _temporal_ctx("We lost the house in the Buffalo Creek flood.",
+                           "Buffalo Creek flood", "DATE_ANCHOR", {"shiftable": False})
+    check("a REGIONAL anchor may not be kept -- it pins one community",
+          keep_is_not_a_local_event(False, ctx).passed, False)
+
+    e, ctx = _temporal_ctx("I was born March 4th, 1951 up the holler.",
+                           "March 4th, 1951", "DATE_OF_BIRTH", {"shiftable": True})
+    check("a shiftable date is replaced by rule",
+          _rule_value(e, POLICIES["replace_date"], ctx), True)
+    check("a private date may not be kept",
+          keep_only_if_public_event(False, ctx).passed, False)
+
+    # ---- ages: keep ONLY a span a deterministic check proved is not an age
+    refuted = {"value": Resolution("value", "conflict", None,
+                                   checks_failed=("not_a_measurement",))}
+    unusable = {"value": Resolution("value", "reject", None,
+                                    checks_failed=("plausible_age_range",))}
+
+    e, ctx = _temporal_ctx("the water came up twelve feet, and we prayed.", "twelve",
+                           "AGE", provenance=refuted)
+    check("a measurement is not an age, so its text stays",
+          _rule_value(e, POLICIES["replace_age"], ctx), False)
+    check("...and the keep clears both checkers",
+          (keep_only_if_refuted_as_an_age(False, ctx).passed,
+           keep_not_an_explicit_age_phrase(False, ctx).passed), (True, True))
+
+    e, ctx = _temporal_ctx("Now I'm sixty-eight and I couldn't leave.", "sixty-eight",
+                           "AGE", {"value": 68})
+    check("a real age is replaced by rule",
+          _rule_value(e, POLICIES["replace_age"], ctx), True)
+    check("...and a keep on it is refuted",
+          keep_only_if_refuted_as_an_age(False, ctx).passed, False)
+
+    # an age nobody could USE is still an age: an out-of-range value is not a licence
+    # to print the span
+    e, ctx = _temporal_ctx("She was a hundred and twenty when she passed.",
+                           "a hundred and twenty", "AGE", provenance=unusable)
+    check("an unusable VALUE does not license keeping the span",
+          age_reading_refuted(e), "")
+    check("...so the rule still replaces it",
+          _rule_value(e, POLICIES["replace_age"], ctx), True)
+
+    # ...and neither does a refutation, if the text plainly reads as an age
+    e, ctx = _temporal_ctx("He was sixty-eight years old that winter.", "sixty-eight",
+                           "AGE", provenance=refuted)
+    check("'years old' refutes a keep whatever the value resolution said",
+          keep_not_an_explicit_age_phrase(False, ctx).passed, False)
+
+    # ---- wiring: both fields are resolved, in the right order, onto `replace`
+    a, d = Entity("t_A1", "AGE"), Entity("t_D1", "DATE_OF_BIRTH")
+    iv = Entity("t_e000", "PERSON")
+    fa, fd = _fields_for(a, iv), _fields_for(d, iv)
+    check("AGE resolves replace_age", "replace_age" in fa, True)
+    check("DATE resolves replace_date", "replace_date" in fd, True)
+    check("replace_age writes the `replace` attribute",
+          POLICIES["replace_age"].attr, "replace")
+    check("replace_date writes the `replace` attribute",
+          POLICIES["replace_date"].attr, "replace")
+    check("replace_age is ordered after `value`",
+          fa.index("replace_age") > fa.index("value"), True)
+    check("replace_date is ordered after `shiftable`",
+          fd.index("replace_date") > fd.index("shiftable"), True)
+
+
 # ---------------------------------------------------------------- serialization
 def test_serialization():
     print("\nserialization -- the artifact surrogate generation consumes")
@@ -216,9 +328,102 @@ def test_serialization():
           ["a", "b", "c"])
 
 
+# ------------------------------------------------------- titled speaker address
+def test_titled_address():
+    print("\ntitled address -- an honorific must not split the sentence")
+    from graph.checks.gender import interviewee_honorific_address_agrees
+    from graph.interviewee import support_for
+
+    text = ("INTERVIEWER: Thank you for sitting down with me, Ms. Reyes. Could we "
+            "start with where you grew up?\nSPEAKER: Happy to do it.\n")
+    i = text.index("Reyes")
+    iv = Entity("t_e000", "PERSON",
+                mentions=[Mention("t", i, i + 5, "Reyes", "PERSON", "t_m1")],
+                attributes={"role": "interviewee"})
+
+    # `_is_address` used to split the sentence with a naive [.?!]+ scanner, so the
+    # period in "Ms." cut the name away from the second-person cue and EVERY titled
+    # interviewer address was rejected -- disabling the one checker that can positively
+    # confirm the speaker's own gender.
+    check("the interviewer's titled address is recognised",
+          support_for(iv, text)[0], "address")
+    ctx = CheckContext(transcript=text, entities=[], edges=[], interviewee=iv,
+                       entity=iv)
+    check("...so a gendered honorific confirms the speaker's gender",
+          interviewee_honorific_address_agrees("F", ctx).passed, True)
+    check("...and refutes the wrong one",
+          interviewee_honorific_address_agrees("M", ctx).passed, False)
+
+    # a name the interviewer merely REFERS to is still not an address
+    text2 = ("INTERVIEWER: Tell me about Ms. Reyes, the woman next door.\n"
+             "SPEAKER: She kept to herself.\n")
+    j = text2.index("Reyes")
+    other = Entity("t_p9", "PERSON",
+                   mentions=[Mention("t", j, j + 5, "Reyes", "PERSON", "t_m9")])
+    check("a name being referred to is not an address",
+          support_for(other, text2)[0], "")
+
+
+# -------------------------------------------------------------------- artifact
+def test_artifact():
+    print("\nartifact -- the contract with surrogate generation")
+    import copy
+    from graph.loader import Violation
+    from graph.serialize import build_payload, validate_payload
+
+    text = "SPEAKER: My name's Rosa and I'm sixty-eight."
+    i, j = text.index("Rosa"), text.index("sixty-eight")
+    iv = Entity("t_e000", "PERSON",
+                mentions=[Mention("t", i, i + 4, "Rosa", "PERSON", "t_m1")],
+                attributes={"role": "interviewee", "replace": True})
+    age = Entity("t_A1", "AGE",
+                 mentions=[Mention("t", j, j + 11, "sixty-eight", "AGE", "t_m2")],
+                 attributes={"value": 68, "replace": True})
+    info = {"interviewee": iv, "coref_ran": False, "llm_ran": True,
+            "llm_model": "test", "interview_date": None,
+            "blocking": [("t_e000", "interviewee_gender", "unverified")]}
+    payload = build_payload("t", text, [iv, age],
+                            [Edge("t_A1", "t_e000", Relation.ATTRIBUTE_OF, "AGE")],
+                            info)
+
+    check("a well-formed artifact validates",
+          validate_payload(payload, text) is payload, True)
+    check("the review gate survives serialization",
+          payload["blocking"][0]["field"], "interviewee_gender")
+    check("the interviewee is identified explicitly, not by convention",
+          payload["interviewee_id"], "t_e000")
+    check("offsets are pinned to a specific text",
+          len(payload["source"]["sha256"]), 64)
+
+    def rejected(mutate=None, transcript=text) -> bool:
+        p = copy.deepcopy(payload)
+        if mutate is not None:
+            mutate(p)
+        try:
+            validate_payload(p, transcript)
+            return False
+        except Violation:
+            return True
+
+    check("an artifact built from a DIFFERENT transcript is rejected",
+          rejected(transcript=text.replace("Rosa", "Rose")), True)
+    check("a mention whose offsets no longer slice to its text is rejected",
+          rejected(lambda p: p["entities"][1]["mentions"][0].update(
+              {"start": 0, "end": 5})), True)
+    check("an edge pointing at no entity is rejected",
+          rejected(lambda p: p["edges"][0].update({"target": "t_nope"})), True)
+    check("a blocking row nobody can resolve is rejected",
+          rejected(lambda p: p["blocking"][0].update({"entity_id": "t_nope"})), True)
+    check("an artifact with no interviewee node is rejected",
+          rejected(lambda p: p.update({"interviewee_id": None})), True)
+    check("a version mismatch is rejected",
+          rejected(lambda p: p.update({"graph_version": "0.1"})), True)
+
+
 def main():
     for t in (test_ownership, test_name_parts, test_dates, test_kin_vocabulary,
-              test_measurements, test_serialization):
+              test_measurements, test_temporal_redaction, test_titled_address,
+              test_serialization, test_artifact):
         t()
     print()
     if FAILS:

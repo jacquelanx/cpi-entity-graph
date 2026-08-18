@@ -232,7 +232,7 @@ def interviewee_honorific_address_agrees(value, ctx) -> CheckOutcome:
         if not (set(normalize(m.group(1))) & toks):
             continue
         if not _is_address(ctx.transcript, m.start(1), m.end(1), m.group(1),
-                           titled=True):
+                           titled=True, phrase_start=m.start()):
             continue
         g = honorific_gender(m.group(0))
         if g:

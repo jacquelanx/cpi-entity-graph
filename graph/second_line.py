@@ -496,6 +496,48 @@ def _safer_replace_location(rule_value, llm_value, ctx=None):
     return True if (rule_value is True or llm_value is True) else False
 
 
+def _safer_replace_date(rule_value, llm_value, ctx=None):
+    """Safe direction for a DATE expression, tempered by the anchor table.
+
+    Identical to `_safer_replace` except in one case: the rule says KEEP because the
+    span names a NATIONALLY known event the table lists, and the model calls the date
+    identifying. There the rule wins -- the table is deterministic and auditable, and
+    no amount of model nervousness makes "9/11" or "Hurricane Katrina" point at one
+    household, while deferring to the model there would strip the historical anchors
+    out of every transcript. A REGIONAL table entry gets no such protection (see
+    `checks/dates.LOCAL_ANCHOR_EVENTS`), and the keep still has to clear both checkers
+    via `_guard_unsafe`, so this loosens the POLICY, never the verification.
+
+    Same shape and same argument as `_safer_replace_location`.
+    """
+    if rule_value is False and llm_value is True and ctx is not None:
+        ent = getattr(ctx, "entity", None)
+        ms = getattr(ent, "mentions", None)
+        phrase = chk_date.anchor_phrase_for(ms[0].text) if ms else ""
+        if phrase and phrase not in chk_date.LOCAL_ANCHOR_EVENTS:
+            return False
+    return True if (rule_value is True or llm_value is True) else False
+
+
+def _safer_replace_age(rule_value, llm_value, ctx=None):
+    """Safe direction for an AGE span, tempered by the age checkers' own verdict.
+
+    The rule only ever keeps a span a deterministic check REFUTED as an age ("the
+    water came up twelve feet"). A model answering "yes, that is a person's age" about
+    a number the transcript immediately follows with a unit of measurement is simply
+    wrong, and replacing the number would corrupt the narrative to protect nothing --
+    so the refutation outranks it. `not_a_measurement` is narrow by construction (it
+    reads only the word directly after the span), which is what makes that safe.
+
+    Every other disagreement resolves toward more redaction, and the keep still clears
+    both checkers via `_guard_unsafe`.
+    """
+    if rule_value is False and llm_value is True and ctx is not None:
+        if chk_age.age_reading_refuted(getattr(ctx, "entity", None)):
+            return False
+    return True if (rule_value is True or llm_value is True) else False
+
+
 def _canon_ethnonym(v):
     """The canonical lowercase ethnonym, or None to leave the value untouched.
     Shares `attributes.normalize_ethnonym` with the rule layer and with
@@ -646,6 +688,33 @@ POLICIES: dict[str, FieldPolicy] = {
         checkers=(chk_date.is_real_public_event,), safer=_safer_shiftable,
         unsafe=False, safe_value=True),
 
+    # Whether a DATE's SURFACE TEXT must be replaced. Nothing decided this: DATE
+    # entities reached surrogate generation with no `replace` key at all -- the exact
+    # hole `replace_location` was added to close for places -- so a consumer keying
+    # off `replace` redacted every person and every place and then emitted the
+    # speaker's date of birth verbatim.
+    #
+    # `shiftable` is the rule, and the two fields are NOT the same question. Shifting
+    # is about the timeline (may the date-shifter move this point?); replacing is
+    # about the text (may these words survive?). They agree in the common case, which
+    # is why `shiftable` can serve as the rule -- a date the shifter will move cannot
+    # survive as written, and a public event it cannot move may stay -- but they come
+    # apart on a REGIONALLY famous event, which has a fixed date the shifter must
+    # respect AND a phrase that points at one small community. `keep_is_not_a_local_event`
+    # is where that difference lives.
+    #
+    # Resolved AFTER `shiftable` (see `_fields_for`), so the rule is a pure function of
+    # a value the second line has already verified -- the same arrangement
+    # `replace_location` has with `subtype_location`. REQUIRED_OR_ABSTAIN and
+    # `unsafe=False` for the reasons argued at `replace_location`: the rule always
+    # supplies a value, so the only outcome a verified tier would newly block is a
+    # keep, and the dangerous direction is gated regardless of tier.
+    "replace_date": FieldPolicy(
+        "replace_date", REQUIRED_OR_ABSTAIN, SAFE_DIRECTION, C.boolean,
+        checkers=(chk_date.keep_only_if_public_event,
+                  chk_date.keep_is_not_a_local_event),
+        safer=_safer_replace_date, attr="replace", unsafe=False, safe_value=True),
+
     # Was the ONLY policy in this registry with `checkers=()` -- so it had both
     # layers on paper while an LLM fill was accepted with the reason "NO
     # deterministic check applied to this value" (16 times on the two samples).
@@ -666,6 +735,22 @@ POLICIES: dict[str, FieldPolicy] = {
         checkers=(chk_age.plausible_range, chk_age.consistent_with_dob,
                   chk_age.not_a_measurement),
         verify_always=True),
+
+    # Whether an AGE's SURFACE TEXT must be replaced. AGE was the one category in the
+    # graph with NO redaction directive of any kind -- no `replace`, and no
+    # `shiftable` either -- so surrogate generation had nothing at all to key off and
+    # "Now I'm sixty-eight" went through untouched, next to a holler and an
+    # occupation. An age is a quasi-identifier, so the rule defaults to replace and
+    # keeps only what a deterministic check proved is not an age (see
+    # `checks/ages.age_reading_refuted`).
+    #
+    # Resolved LAST on an AGE (see `_fields_for`), because the rule reads the `value`
+    # Resolution, and that has to exist first.
+    "replace_age": FieldPolicy(
+        "replace_age", REQUIRED_OR_ABSTAIN, SAFE_DIRECTION, C.boolean,
+        checkers=(chk_age.keep_only_if_refuted_as_an_age,
+                  chk_age.keep_not_an_explicit_age_phrase),
+        safer=_safer_replace_age, attr="replace", unsafe=False, safe_value=True),
 
     # ---- IDENTIFIERS ------------------------------------------------------
     # BOTH directions are checked. Claiming the INTERVIEWEE owns an identifier is
@@ -871,7 +956,23 @@ def apply_resolution(ent, res: Resolution, policy: FieldPolicy) -> None:
     ent.provenance[policy.field] = res
 
     attr = policy.attr or policy.field
-    if res.action in (FILL, CONFIRM) or (res.action == CONFLICT and res.value is not None):
+    # KEEP writes too. For most fields that is a no-op -- the rule layer already put
+    # its answer on the entity with `setdefault`, so "the rules stand" needs nothing
+    # written. But a rule value that is COMPUTED during arbitration rather than read
+    # off the entity has no other way to land, and with the LLM off every one of those
+    # fields resolves KEEP:
+    #
+    #   * `replace_date` (a function of the resolved `shiftable`) and `replace_age` (a
+    #     function of the `value` Resolution) reached the graph with NO `replace` key
+    #     at all in rules-only runs -- the exact hole they were added to close, back
+    #     again through a different door. The evaluation caught it: date redaction 37%,
+    #     age redaction 0%, every span reported as kept.
+    #   * `interviewee_identity` hit this first and `graph/interviewee.py` worked around
+    #     it locally by writing `identity_entity_id` itself.
+    #
+    # Writing the resolved value on KEEP is also just the honest semantics: the
+    # Resolution says what the field IS, so the attribute should say the same thing.
+    if res.action in (FILL, CONFIRM, KEEP) or (res.action == CONFLICT and res.value is not None):
         if attr == "subtype":
             ent.subtype = str(res.value).upper() if res.value is not None else None
         elif attr == "category":
@@ -1002,6 +1103,17 @@ def _rule_value(ent, policy: FieldPolicy, ctx):
         if raw:
             return raw not in BROAD_LOCATION_TYPES
         return ent.attributes.get("replace", True)
+    if policy.field == "replace_date":
+        # A pure function of the RESOLVED `shiftable` -- resolved first, see
+        # `_fields_for`. A date the shifter will move cannot survive as written; one
+        # it cannot move may stay, subject to the keep checkers. Defaults to shiftable
+        # (so, replace) if the attribute is somehow missing, which is the safe error.
+        return bool(ent.attributes.get("shiftable", True))
+    if policy.field == "replace_age":
+        # Keep ONLY a span a deterministic check proved is not an age. An age nobody
+        # could parse is still an age, so it is replaced.
+        from .checks.ages import age_reading_refuted
+        return not bool(age_reading_refuted(ent))
     if attr == "subtype":
         return ent.subtype
     if attr == "category":
@@ -1042,7 +1154,9 @@ def _fields_for(ent, interviewee) -> list[str]:
 
     ORDER MATTERS within a category: a later field's checkers may read the value an
     earlier one settled. `replace_location` must come after `subtype_location`
-    because the keep gate is a function of the resolved geographic type, and
+    because the keep gate is a function of the resolved geographic type;
+    `replace_date` after `shiftable` and `replace_age` after `value` for exactly the
+    same reason (each of those rules is a pure function of the field before it); and
     `ethnicity` comes last on a person so its checkers see final mentions.
     """
     if ent is interviewee:
@@ -1070,12 +1184,12 @@ def _fields_for(ent, interviewee) -> list[str]:
         # line. Previously only DATE_ANCHOR was arbitrated, which left the rule's
         # `shiftable=True` on absolute, relative and DOB dates double-checked by
         # nothing at all.
-        out = ["resolved_value", "approximate", "shiftable"]
+        out = ["resolved_value", "approximate", "shiftable", "replace_date"]
         if ent.category == "DATE_OF_BIRTH":
             out += ["kind", "owner"]
         return out
     if ent.category == "AGE":
-        return ["value", "approximate", "kind", "owner", "stated_with"]
+        return ["value", "approximate", "kind", "owner", "stated_with", "replace_age"]
     if ent.category in _ID_CATS:
         out = ["kind", "owner"]
         if ent.category == "OCCUPATION":

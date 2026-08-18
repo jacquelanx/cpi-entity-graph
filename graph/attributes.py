@@ -151,7 +151,8 @@ def _honorific_address_gender(transcript: str, interviewee: Entity):
             continue
         if not (set(normalize(m.group(1))) & toks):
             continue
-        if not _is_address(transcript, m.start(1), m.end(1), m.group(1), titled=True):
+        if not _is_address(transcript, m.start(1), m.end(1), m.group(1),
+                           titled=True, phrase_start=m.start()):
             continue
         g = honorific_gender(m.group(0))
         if g:

@@ -43,7 +43,7 @@
       ],
       "gender": "F",
       "replace": true,
-      "note": "grandmother; 'Mamaw' is NOT in the kin table -> expected relation miss"
+      "note": "grandmother; 'Mamaw' IS in the kin table (KINSHIP_GENDER, the KIN regex and the relation verifier's synonym groups) -> the relation should hit."
     },
     {
       "canonical": "Denver",
@@ -71,7 +71,7 @@
       ],
       "gender": "M",
       "replace": true,
-      "note": "uncle; shares a given name with foreman Bill Ratliff -> containment over-merge trap"
+      "note": "uncle; shares a given name with foreman Bill Ratliff. Rules-only, containment over-merges them; with the LLM the double-gate vetoes the merge and `same_person` records the split with a Resolution."
     },
     {
       "canonical": "Bill Ratliff",
@@ -81,7 +81,7 @@
       "gender": "M",
       "replace": true,
       "subtype": "PROFESSIONAL",
-      "note": "mine foreman; 'Bill' folds into this full name -> expected over-merge with the uncle"
+      "note": "mine foreman; the bare 'Bill' would fold into this full name, which is the over-merge the containment veto exists to stop."
     },
     {
       "canonical": "Brother Estep",
@@ -119,7 +119,7 @@
       ],
       "gender": "M",
       "replace": false,
-      "note": "real public figure NOT in list -> expected over-redaction"
+      "note": "real public figure (union leader) NOT in the list -> expected over-redaction. Also the FAMILY-subtype trap: 'my Papaw' sits 3 chars after the name."
     },
     {
       "canonical": "Reagan",
@@ -151,7 +151,7 @@
       "source": "INTERVIEWEE",
       "target": "Opal",
       "detail": "grandmother",
-      "note": "'Mamaw' not in kin table -> expected miss"
+      "note": "'Mamaw' is in the kin table -> this relation should be found."
     },
     {
       "source": "INTERVIEWEE",
@@ -176,59 +176,68 @@
       "resolved": "1951-03-04",
       "tolerance_days": 0,
       "note": "the father Earl's date of birth ('He was born March 4th, 1951')",
-      "owner": "other"
+      "owner": "other",
+      "replace": true
     },
     {
       "text": "1921",
       "category": "DATE_ABSOLUTE",
       "resolved": "1921-01-01",
-      "tolerance_days": 0
+      "tolerance_days": 0,
+      "replace": true
     },
     {
       "text": "nineteen and sixty",
       "category": "DATE_ABSOLUTE",
       "resolved": "1960-01-01",
       "tolerance_days": 0,
-      "note": "spoken/dialect year -> dateutil cannot parse -> expected miss"
+      "note": "spoken/dialect year with no digits; `parse_spoken_year` resolves it -> 1960.",
+      "replace": true
     },
     {
       "text": "Buffalo Creek flood",
       "category": "DATE_ANCHOR",
       "resolved": "1972-02-26",
       "tolerance_days": 0,
-      "note": "regional anchor NOT in table -> expected miss"
+      "note": "regional anchor, now IN the table -> the DATE resolves and stays non-shiftable. Its PHRASE is still replaced: LOCAL_ANCHOR_EVENTS marks it regionally known, and naming it pins the speaker to one valley of a few thousand people in 1972.",
+      "replace": true
     },
     {
       "text": "Great Recession",
       "category": "DATE_ANCHOR",
       "resolved": "2008-09-15",
       "tolerance_days": 0,
-      "note": "table key is 'the great recession' with the article; span without 'the' fails substring match -> expected miss (anchor-table brittleness)"
+      "note": "the table key carries the article ('the great recession'); `_strip_article` makes the match article-insensitive -> resolves, and the phrase is kept.",
+      "replace": false
     },
     {
       "text": "9/11",
       "category": "DATE_ANCHOR",
       "resolved": "2001-09-11",
-      "tolerance_days": 0
+      "tolerance_days": 0,
+      "replace": false
     },
     {
       "text": "the eighties",
       "category": "DATE_RELATIVE",
       "expect_flag": true,
-      "note": "bare decade -> not resolvable to a day; flagging is correct"
+      "note": "bare decade -> not resolvable to a day; flagging is correct",
+      "replace": true
     },
     {
       "text": "thirty-odd years ago",
       "category": "DATE_RELATIVE",
       "resolved": "1986-09-15",
       "tolerance_days": 730,
-      "note": "'thirty-odd' count not parseable by the relative-date regex -> expected miss"
+      "note": "'thirty-odd' is outside the relative-date count vocabulary -> rule miss; the second line fills it only if the date checkers pass.",
+      "replace": true
     },
     {
       "text": "A few years ago",
       "category": "DATE_RELATIVE",
       "resolved": "2016-09-15",
-      "tolerance_days": 60
+      "tolerance_days": 60,
+      "replace": true
     }
   ],
   "ages": [
@@ -236,43 +245,50 @@
       "text": "fourteen",
       "value": 14,
       "tolerance": 0,
-      "owner": "other"
+      "owner": "other",
+      "replace": true
     },
     {
       "text": "eighteen",
       "value": 18,
       "tolerance": 0,
-      "owner": "interviewee"
+      "owner": "interviewee",
+      "replace": true
     },
     {
       "text": "fifty-five",
       "value": 55,
       "tolerance": 0,
-      "owner": "interviewee"
+      "owner": "interviewee",
+      "replace": true
     },
     {
       "text": "his fifties",
       "value": 55,
       "tolerance": 5,
-      "owner": "other"
+      "owner": "other",
+      "replace": true
     },
     {
       "text": "ninety-one",
       "value": 91,
       "tolerance": 0,
-      "owner": "other"
+      "owner": "other",
+      "replace": true
     },
     {
       "text": "thirty-seven",
       "value": 37,
       "tolerance": 0,
-      "owner": "other"
+      "owner": "other",
+      "replace": true
     },
     {
       "text": "sixty-eight",
       "value": 68,
       "tolerance": 0,
-      "owner": "interviewee"
+      "owner": "interviewee",
+      "replace": true
     }
   ],
   "locations": [
@@ -376,22 +392,26 @@
     {
       "text": "miners",
       "type": "OCCUPATION",
-      "owner": "other"
+      "owner": "other",
+      "identifying": false
     },
     {
       "text": "schoolteacher",
       "type": "OCCUPATION",
-      "owner": "other"
+      "owner": "other",
+      "identifying": false
     },
     {
       "text": "foreman",
       "type": "OCCUPATION",
-      "owner": "other"
+      "owner": "other",
+      "identifying": false
     },
     {
       "text": "preacher",
       "type": "OCCUPATION",
-      "owner": "other"
+      "owner": "other",
+      "identifying": false
     }
   ]
 }

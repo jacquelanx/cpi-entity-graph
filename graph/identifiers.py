@@ -38,7 +38,7 @@ COMMON_OCCUPATIONS = {
     # extraction / trades / manual
     "miner", "miners", "coal miner", "farmer", "farmers", "fisherman", "fishermen",
     "shrimper", "deckhand", "welder", "mechanic", "carpenter", "plumber",
-    "electrician", "painter", "roofer", "mason", "logger", "trucker",
+    "electrician", "painter", "roofer", "mason", "logger", "trucker", "millwright",
     "truck driver", "driver", "laborer", "labourer", "factory worker", "millworker",
     "mill worker", "steelworker", "foreman", "machinist", "operator", "janitor",
     "custodian", "housekeeper", "maid", "seamstress", "tailor", "butcher", "baker",
@@ -50,6 +50,12 @@ COMMON_OCCUPATIONS = {
     "nurse", "nurses", "nurse's aide", "aide", "caregiver", "babysitter", "nanny",
     "teacher", "teachers", "schoolteacher", "substitute teacher", "secretary",
     "receptionist", "bookkeeper", "accountant", "typist",
+    # Social services. `caseworker` is the gap the evaluation found: the rule table
+    # did not list it, so `identifying_not_a_common_occupation` had nothing to refute
+    # the model's `True` with, and a diocese caseworker was flagged as a job rare
+    # enough to single somebody out. Every agency in the country employs them.
+    "caseworker", "case worker", "social worker", "counselor", "counsellor",
+    "therapist", "midwife", "orderly", "dispatcher", "librarian",
     # uniformed / civic / faith
     "soldier", "sailor", "marine", "policeman", "police officer", "officer",
     "firefighter", "fireman", "mailman", "postman", "preacher", "pastor",

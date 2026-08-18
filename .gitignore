@@ -7,6 +7,10 @@ venv/
 .pytest_cache/
 .mypy_cache/
 data/
+# Graph artifacts. These carry every detected span VERBATIM (names, phone numbers,
+# ages, dates), so they are as sensitive as the transcripts themselves and must
+# never be committed. See the module docstring in graph/serialize.py.
+out/
 # LLM decision cache (contains transcript-derived model responses)
 .llm_cache.json
 *.llm_cache.json

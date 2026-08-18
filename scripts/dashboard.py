@@ -25,6 +25,7 @@ OUT = REPO_ROOT / "tests" / "pipeline_report.html"
 TITLES = {
     "interview_001": "Gulf Coast Vietnamese shrimping family",
     "interview_002": "Appalachian coal-mining family",
+    "interview_003": "Chicago steel-mill family (short demo)",
 }
 
 
@@ -75,9 +76,13 @@ def build():
 <style>{render.CSS}</style></head>
 <body><div class="wrap">
   <h1>De-identification pipeline &mdash; walkthrough &amp; metrics</h1>
-  <p class="lede">Each transcript is processed independently through all six stages. Metrics assume a
-     perfect detector, so they are an upper bound on this graph stage; multiply by the detector's
-     recall for end-to-end numbers.</p>
+  <p class="lede"><b>Rules only.</b> Each transcript runs independently through all twelve stages,
+     with the LLM second line switched OFF &mdash; this is the deterministic baseline. Run
+     <code>scripts/llm_report.py</code> for the two-layer view. Every stage shows the resolved
+     value <i>and</i> the decision behind it; stage 11 is the exhaustive ledger and stage 12 is the
+     artifact the surrogate-generation stage receives. Metrics assume a perfect detector, so they
+     are an upper bound on this graph stage; multiply by the detector's recall for end-to-end
+     numbers.</p>
   <div class="tabs">{''.join(tabs)}</div>
   {''.join(panels)}
   <p class="foot">Across all {len(tabs)} transcripts the pipeline produced <b>{tot_leaks} privacy leaks</b> and

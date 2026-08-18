@@ -1,0 +1,254 @@
+{
+  "transcript_id": "interview_003",
+  "interview_date": "2016-06-14",
+  "interviewee": {
+    "identity": "Alma Reyes",
+    "forms": [
+      "Alma Reyes",
+      "Ms. Reyes"
+    ],
+    "gender": "F",
+    "ethnicity": "mexican",
+    "dob": "1957-10-12",
+    "note": "THE case the other two samples cannot exercise: the speaker is NAMED. She self-introduces ('My name's Alma Reyes') and the interviewer addresses her by title ('Thank you for sitting down with me, Ms. Reyes'), so interviewee_identity should resolve and the named PERSON should be folded into e000. Her gender is then provable deterministically from the interviewer's honorific, which is the only checker that can POSITIVELY support interviewee_gender -- in interviews 001 and 002 the speaker is never named, so it can never fire and the field is unverifiable in principle."
+  },
+  "people": [
+    {
+      "canonical": "Salvador",
+      "forms": [
+        "Salvador"
+      ],
+      "gender": "M",
+      "replace": true,
+      "note": "father; introduced appositively ('My father, Salvador')"
+    },
+    {
+      "canonical": "Esperanza",
+      "forms": [
+        "Esperanza",
+        "Pera"
+      ],
+      "gender": "F",
+      "replace": true,
+      "note": "mother; the alias is introduced with a PRONOUN subject ('everybody on the block called her Pera'), so the merge depends on resolving 'her' to the nearest preceding person of matching gender rather than on a shared name token"
+    },
+    {
+      "canonical": "Rafael",
+      "forms": [
+        "Rafael"
+      ],
+      "gender": "M",
+      "replace": true,
+      "note": "brother"
+    },
+    {
+      "canonical": "Marisol",
+      "forms": [
+        "Marisol"
+      ],
+      "gender": "F",
+      "replace": true,
+      "note": "daughter; owns the parish social-media handle, so that identifier must NOT be attributed to the speaker"
+    },
+    {
+      "canonical": "Reagan",
+      "forms": [
+        "Reagan"
+      ],
+      "gender": "M",
+      "replace": false,
+      "note": "public figure in PUBLIC_FIGURES, used impersonally ('Reagan was president when the layoffs started') -> keep. The keep still has to clear personal_signal_absent and not_kin_of_interviewee."
+    }
+  ],
+  "relations": [
+    {
+      "source": "INTERVIEWEE",
+      "target": "Salvador",
+      "detail": "father"
+    },
+    {
+      "source": "INTERVIEWEE",
+      "target": "Esperanza",
+      "detail": "mother"
+    },
+    {
+      "source": "INTERVIEWEE",
+      "target": "Rafael",
+      "detail": "brother"
+    },
+    {
+      "source": "INTERVIEWEE",
+      "target": "Marisol",
+      "detail": "daughter"
+    }
+  ],
+  "dates": [
+    {
+      "text": "October 12th, 1957",
+      "category": "DATE_OF_BIRTH",
+      "resolved": "1957-10-12",
+      "tolerance_days": 0,
+      "owner": "interviewee",
+      "replace": true,
+      "note": "the SPEAKER'S OWN date of birth -- the single most consequential field for interviewee-only surrogate generation"
+    },
+    {
+      "text": "1948",
+      "category": "DATE_ABSOLUTE",
+      "resolved": "1948-01-01",
+      "tolerance_days": 0,
+      "replace": true
+    },
+    {
+      "text": "1992",
+      "category": "DATE_ABSOLUTE",
+      "resolved": "1992-01-01",
+      "tolerance_days": 0,
+      "replace": true
+    },
+    {
+      "text": "1981",
+      "category": "DATE_ABSOLUTE",
+      "resolved": "1981-01-01",
+      "tolerance_days": 0,
+      "replace": true
+    },
+    {
+      "text": "9/11",
+      "category": "DATE_ANCHOR",
+      "resolved": "2001-09-11",
+      "tolerance_days": 0,
+      "replace": false,
+      "note": "nationally known public event -> resolves from the anchor table, stays non-shiftable, and its phrase is kept: naming it identifies nobody"
+    },
+    {
+      "text": "a few years ago",
+      "category": "DATE_RELATIVE",
+      "resolved": "2013-06-15",
+      "tolerance_days": 60,
+      "replace": true
+    }
+  ],
+  "ages": [
+    {
+      "text": "nineteen",
+      "value": 19,
+      "tolerance": 0,
+      "owner": "interviewee",
+      "replace": true
+    },
+    {
+      "text": "thirty-four",
+      "value": 34,
+      "tolerance": 0,
+      "owner": "interviewee",
+      "replace": true
+    },
+    {
+      "text": "ninety-one",
+      "value": 91,
+      "tolerance": 0,
+      "owner": "other",
+      "replace": true,
+      "note": "the mother's age; 'She was ninety-one' -- a third-person subject governs the span, so it must not be attributed to the speaker"
+    },
+    {
+      "text": "his seventies",
+      "value": 75,
+      "tolerance": 5,
+      "owner": "other",
+      "replace": true,
+      "note": "the father's; a decade expression, so approximate"
+    }
+  ],
+  "locations": [
+    {
+      "text": "South Chicago",
+      "in_gazetteer": false,
+      "type": "neighborhood",
+      "replace": true
+    },
+    {
+      "text": "Chicago",
+      "in_gazetteer": true,
+      "type": "city",
+      "replace": true,
+      "note": "in the gazetteer with Illinois as its parent, and both are mentioned -> the one LOCATED_IN edge in this transcript"
+    },
+    {
+      "text": "Illinois",
+      "in_gazetteer": true,
+      "type": "state",
+      "replace": false
+    },
+    {
+      "text": "Buffalo Avenue",
+      "in_gazetteer": false,
+      "type": "street",
+      "replace": true,
+      "note": "a street plus a birth date is a household"
+    },
+    {
+      "text": "Guanajuato",
+      "in_gazetteer": false,
+      "type": "state",
+      "replace": false,
+      "note": "a Mexican state of ~6M people, so naming it singles out nobody. The pipeline OVER-REDACTS it, for the same reason it over-redacts Mekong Delta in 001: the gazetteer does not know it, no type word sits beside the mention, and keep_rests_on_a_verified_type refuses a keep built on an uncorroborated LLM type."
+    },
+    {
+      "text": "Pilsen",
+      "in_gazetteer": false,
+      "type": "neighborhood",
+      "replace": true
+    },
+    {
+      "text": "Saint Anthony Hospital",
+      "in_gazetteer": false,
+      "type": "institution",
+      "replace": true,
+      "note": "a named employer is a direct pointer to a person; an institution is never keepable"
+    }
+  ],
+  "identifiers": [
+    {
+      "text": "773-555-0182",
+      "type": "PHONE",
+      "owner": "interviewee"
+    },
+    {
+      "text": "alma.reyes@example.org",
+      "type": "EMAIL",
+      "owner": "interviewee",
+      "note": "two sentences after the binding first-person cue, with nothing intervening -> the bounded lookback in checks/ownership must reach it"
+    },
+    {
+      "text": "4-772-9930",
+      "type": "SSN_OR_ID",
+      "owner": "interviewee"
+    },
+    {
+      "text": "@stanthonysouth",
+      "type": "USERNAME_HANDLE",
+      "owner": "other",
+      "note": "the daughter's ('My daughter set up an account'): a kin noun stands between the cue and the span"
+    },
+    {
+      "text": "millwright",
+      "type": "OCCUPATION",
+      "owner": "other",
+      "identifying": false
+    },
+    {
+      "text": "nurse",
+      "type": "OCCUPATION",
+      "owner": "interviewee",
+      "identifying": false
+    },
+    {
+      "text": "teacher",
+      "type": "OCCUPATION",
+      "owner": "other",
+      "identifying": false
+    }
+  ]
+}

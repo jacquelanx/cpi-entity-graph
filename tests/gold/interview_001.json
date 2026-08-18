@@ -35,7 +35,7 @@
       ],
       "gender": "M",
       "replace": true,
-      "note": "brother; nickname introduced with 'calling' (cue rule matches call/called/calls, not calling) -> expected alias miss"
+      "note": "brother; nickname introduced with 'ended up calling him Sonny'. The alias cue set matches call/called/calls/calling and the pronoun search skips the alias itself, so Minh + Sonny SHOULD merge."
     },
     {
       "canonical": "Thao",
@@ -53,7 +53,7 @@
       ],
       "gender": "M",
       "replace": true,
-      "note": "uncle; a second unrelated Hai also appears with the SAME surface form -> not separable in this schema, expected over-merge"
+      "note": "uncle; a second unrelated Hai appears with the SAME surface form -> not separable in a text-keyed schema, expected over-merge."
     },
     {
       "canonical": "Duc",
@@ -118,7 +118,7 @@
       ],
       "gender": "M",
       "replace": false,
-      "note": "public figure in list -> keep; co-sign may fail to affirm and over-redact"
+      "note": "public figure in PUBLIC_FIGURES -> keep. The keep is not automatic: `replace` resolves under safe_direction and must clear personal_signal_absent + not_kin_of_interviewee before a name survives."
     },
     {
       "canonical": "Governor Barbour",
@@ -127,7 +127,7 @@
       ],
       "gender": "M",
       "replace": false,
-      "note": "real public figure NOT in list -> expected over-redaction"
+      "note": "real public figure NOT in the list. The rules say replace, the model says keep, and the safe direction redacts -> an honest over-redaction."
     },
     {
       "canonical": "Anderson Cooper",
@@ -136,7 +136,7 @@
       ],
       "gender": "M",
       "replace": false,
-      "note": "real public figure NOT in list -> expected over-redaction"
+      "note": "real public figure NOT in the list -> expected over-redaction, same as Governor Barbour."
     }
   ],
   "relations": [
@@ -187,52 +187,62 @@
       "category": "DATE_OF_BIRTH",
       "resolved": "1968-09-03",
       "tolerance_days": 0,
-      "owner": "interviewee"
+      "owner": "interviewee",
+      "replace": true
     },
     {
       "text": "spring of 1975",
       "category": "DATE_ABSOLUTE",
       "resolved": "1975-03-20",
       "tolerance_days": 45,
-      "note": "season -> rule fuzzy-parses year only (Jan 1), off by ~78d, expected miss"
+      "note": "season + year. `parse_absolute_date` resolves a season to mid-season (1975-03-20) rather than falling through to January 1st.",
+      "replace": true
     },
     {
       "text": "Saigon fell",
       "category": "DATE_ANCHOR",
       "resolved": "1975-04-30",
       "tolerance_days": 0,
-      "note": "real anchor NOT in ANCHOR_EVENTS table -> expected rule miss"
+      "note": "'saigon fell' / 'fall of saigon' are in ANCHOR_EVENTS -> resolves. Kept unredacted: an internationally known event identifies nobody.",
+      "replace": false
     },
     {
       "text": "Hurricane Katrina",
       "category": "DATE_ANCHOR",
       "resolved": "2005-08-29",
-      "tolerance_days": 0
+      "tolerance_days": 0,
+      "replace": false,
+      "note": "national anchor -> resolves, and its phrase is kept."
     },
     {
       "text": "BP oil spill",
       "category": "DATE_ANCHOR",
       "resolved": "2010-04-20",
-      "tolerance_days": 0
+      "tolerance_days": 0,
+      "replace": false,
+      "note": "national anchor -> resolves, and its phrase is kept."
     },
     {
       "text": "six years ago",
       "category": "DATE_RELATIVE",
       "resolved": "2009-04-18",
-      "tolerance_days": 45
+      "tolerance_days": 45,
+      "replace": true
     },
     {
       "text": "couple summers back",
       "category": "DATE_RELATIVE",
       "resolved": "2013-06-21",
       "tolerance_days": 90,
-      "note": "'back' not 'ago' and season plural -> expected miss"
+      "note": "'back' rather than 'ago', season plural -> the RULE misses it; the second line fills it from the LLM only if the date checkers pass.",
+      "replace": true
     },
     {
       "text": "Last spring",
       "category": "DATE_RELATIVE",
       "resolved": "2015-03-20",
-      "tolerance_days": 40
+      "tolerance_days": 40,
+      "replace": true
     }
   ],
   "ages": [
@@ -240,43 +250,50 @@
       "text": "seven",
       "value": 7,
       "tolerance": 0,
-      "owner": "interviewee"
+      "owner": "interviewee",
+      "replace": true
     },
     {
       "text": "forty-something",
       "value": 45,
       "tolerance": 5,
-      "owner": "other"
+      "owner": "other",
+      "replace": true
     },
     {
       "text": "nineteen",
       "value": 19,
       "tolerance": 0,
-      "owner": "interviewee"
+      "owner": "interviewee",
+      "replace": true
     },
     {
       "text": "twenty-three",
       "value": 23,
       "tolerance": 0,
-      "owner": "interviewee"
+      "owner": "interviewee",
+      "replace": true
     },
     {
       "text": "twelve",
       "value": 12,
       "tolerance": 0,
-      "owner": "other"
+      "owner": "other",
+      "replace": true
     },
     {
       "text": "sixteen",
       "value": 16,
       "tolerance": 0,
-      "owner": "other"
+      "owner": "other",
+      "replace": true
     },
     {
       "text": "her eighties",
       "value": 82,
       "tolerance": 5,
-      "owner": "other"
+      "owner": "other",
+      "replace": true
     }
   ],
   "locations": [
@@ -296,13 +313,15 @@
       "text": "Mekong Delta",
       "in_gazetteer": false,
       "type": "region",
-      "replace": false
+      "replace": false,
+      "note": "a region of ~17M people, so keeping the name is safe. The pipeline OVER-REDACTS it: the gazetteer does not know it, no type word sits beside any mention, and `keep_rests_on_a_verified_type` refuses a keep resting on an uncorroborated LLM type."
     },
     {
       "text": "Palawan",
       "in_gazetteer": false,
       "type": "region",
-      "replace": false
+      "replace": false,
+      "note": "a province, not a city. The model types it 'city' -- wrong but harmless here, since any city-level type forces replace."
     },
     {
       "text": "Philippines",
@@ -371,22 +390,26 @@
     {
       "text": "seamstress",
       "type": "OCCUPATION",
-      "owner": "other"
+      "owner": "other",
+      "identifying": false
     },
     {
       "text": "deckhand",
       "type": "OCCUPATION",
-      "owner": "other"
+      "owner": "other",
+      "identifying": false
     },
     {
       "text": "welder",
       "type": "OCCUPATION",
-      "owner": "other"
+      "owner": "other",
+      "identifying": false
     },
     {
       "text": "caseworker",
       "type": "OCCUPATION",
-      "owner": "other"
+      "owner": "other",
+      "identifying": false
     }
   ]
 }

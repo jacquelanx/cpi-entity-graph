@@ -113,7 +113,27 @@ _VOCATIVE_AFTER = re.compile(r"^\s*,")
 # The name is being REFERRED to, not addressed.
 _REFERRING = re.compile(r"\b(?:named|called|about|mentioned|know|knew|remember)\s+$", re.I)
 
-_SENT_SPLIT = re.compile(r"[.?!]+")
+def _sentence_around(transcript: str, pos: int) -> str:
+    """The sentence containing `pos`, via THE shared abbreviation-aware splitter.
+
+    This was a local `re.split(r"[.?!]+")`, and the abbreviation it could not handle
+    is the one that matters most here: an HONORIFIC. "Thank you for sitting down with
+    me, Ms. Reyes." split into "...with me, Ms" and " Reyes", so the fragment holding
+    the name carried no second-person cue and `_is_address` rejected it. That silently
+    disabled the whole titled-address route -- both the third branch of `support_for`
+    and `checks/gender.interviewee_honorific_address_agrees`, which is the ONLY checker
+    that can positively confirm the speaker's own gender. A transcript whose
+    interviewer says "Ms. Reyes" in every other line still could not verify that the
+    speaker is female.
+
+    `graph/sentences.py` has known about "ms." since it was written; this module just
+    was not asking it.
+    """
+    from .sentences import sentence_spans
+    for s, e in sentence_spans(transcript):
+        if s <= pos < e:
+            return transcript[s:e]
+    return transcript[max(0, pos - 160):pos + 160]
 
 # A name introduced as somebody's relative is not the speaker. ANY possessive
 # counts, not just first person: "my mother, Gloria" (the speaker's), "your husband
@@ -177,7 +197,8 @@ def support_for(entity, transcript: str) -> tuple[str, str]:
             continue
         if not (set(normalize(m.group(1))) & toks):
             continue
-        ev = _is_address(transcript, m.start(1), m.end(1), m.group(1), titled=True)
+        ev = _is_address(transcript, m.start(1), m.end(1), m.group(1),
+                         titled=True, phrase_start=m.start())
         if ev:
             return "address", ev
     for mention in entity.mentions:
@@ -191,7 +212,7 @@ def support_for(entity, transcript: str) -> tuple[str, str]:
 
 
 def _is_address(transcript: str, start: int, end: int, text: str,
-                titled: bool) -> str:
+                titled: bool, phrase_start: int | None = None) -> str:
     """The evidence quote if this name occurrence is the interviewer ADDRESSING the
     listener, else "". Shared by the titled and bare routes so the two cannot drift.
 
@@ -210,22 +231,25 @@ def _is_address(transcript: str, start: int, end: int, text: str,
         only one of them it is a coin flip ("Did you and Loretta stay close?" reads
         as vocative purely because of the coordinating "and").
     """
-    if kin_introduction_before(transcript, start):
+    # Look back from the start of the whole ADDRESS PHRASE, not from the name. With a
+    # titled name the honorific sits in between, so anchoring here read "Tell me about
+    # Ms. Reyes, the woman next door" as an address: `_REFERRING` saw "Ms. " instead of
+    # "about ", and the comma of the APPOSITIVE then satisfied the vocative test. That
+    # is a third party clearing the positive gate on `interviewee_identity`, which is
+    # the worst error this pipeline can make.
+    look = start if phrase_start is None else phrase_start
+    if kin_introduction_before(transcript, look):
         return ""                         # "your husband Earl" -- a third party
-    before = transcript[max(0, start - 40):start]
+    before = transcript[max(0, look - 40):look]
     after = transcript[end:end + 4]
     if _REFERRING.search(before):
         return ""                         # "two people named Hai" -- referred to
     vocative = bool(_VOCATIVE_BEFORE.search(before) or _VOCATIVE_AFTER.match(after))
     if not vocative and not titled:
         return ""
-    seg_start = max(0, start - 160)
-    seg = transcript[seg_start:end + 160]
-    for part in _SENT_SPLIT.split(seg):
-        if text not in part:
-            continue
-        if _SECOND_PERSON.search(part) or (titled and vocative):
-            return part.strip()[:120]
+    part = _sentence_around(transcript, start)
+    if _SECOND_PERSON.search(part) or (titled and vocative):
+        return part.strip()[:120]
     return ""
 
 

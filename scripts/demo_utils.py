@@ -37,6 +37,12 @@ def detections_from_gold(text: str, gold: dict):
     for p in gold["people"]:
         for f in p["forms"]:
             add(f, "PERSON")
+    # The SPEAKER'S OWN name, when the transcript states it. It lives under
+    # `interviewee` rather than in `people` on purpose: the identification stage folds
+    # it into e000, so it is not a third party and must not be scored as one -- but a
+    # detector would obviously find it, so the simulation has to emit it.
+    for f in (gold.get("interviewee") or {}).get("forms", []):
+        add(f, "PERSON")
     for l in gold.get("locations", []):
         add(l["text"], "LOCATION")
     for d in gold.get("dates", []):

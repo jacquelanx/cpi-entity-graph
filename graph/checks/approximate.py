@@ -136,14 +136,13 @@ def anchor_in_table_is_exact(value, ctx) -> CheckOutcome:
     name = "anchor_in_table_is_exact"
     if getattr(ctx.entity, "category", "") != "DATE_ANCHOR":
         return na(name, "not an anchor")
-    from ..location_dates import ANCHOR_EVENTS, _strip_article
-    text = _span_text(ctx).lower()
-    text_na = _strip_article(text)
-    for phrase in ANCHOR_EVENTS:
-        pna = _strip_article(phrase)
-        if phrase in text or pna in text_na or pna in text:
-            if value is True:
-                return fail(name, f"{phrase!r} is in the anchor table with a "
-                                  f"fixed date; not an estimate")
-            return ok(name, "listed public event, marked exact")
-    return na(name, "phrase not in the anchor table")
+    # THE shared table match (`checks/dates.anchor_phrase_for`), not a fourth copy of
+    # the article-insensitive longest-first loop.
+    from .dates import anchor_phrase_for
+    phrase = anchor_phrase_for(_span_text(ctx))
+    if not phrase:
+        return na(name, "phrase not in the anchor table")
+    if value is True:
+        return fail(name, f"{phrase!r} is in the anchor table with a "
+                          f"fixed date; not an estimate")
+    return ok(name, "listed public event, marked exact")

@@ -1,10 +1,18 @@
 """
-Deterministic checkers for AGE `value`.
+Deterministic checkers for AGE `value` and `replace_age`.
 
 The rule layer parses digits, spelled-out numbers, decade expressions and
 '-something' forms. When it misses and the LLM fills in, the guess must be a
 plausible whole-year age and must not contradict a DOB the graph already knows
 for the same person (via ATTRIBUTE_OF), given the interview date.
+
+`keep_only_if_refuted_as_an_age` / `keep_not_an_explicit_age_phrase` are the KEEP
+gate for `replace_age`, the field that tells surrogate generation whether an age
+span's surface text may survive. AGE entities used to reach the generator with no
+`replace` key AND no `shiftable` key -- the only category in the graph with no
+redaction directive of any kind -- so a consumer keying off `replace` emitted the
+speaker's ages verbatim. An age is a quasi-identifier, so the default is to replace,
+and the ONLY keepable span is one a deterministic check proved is not an age at all.
 """
 
 from __future__ import annotations
@@ -100,3 +108,67 @@ def consistent_with_dob(value, ctx) -> CheckOutcome:
         return fail(name, f"age {value} exceeds age at interview "
                           f"({age_at_interview:.0f}) implied by DOB {dob}")
     return ok(name)
+
+
+# ------------------------------------------------------- replace / keep the text
+
+# The age checks whose FAILURE means "this span is not an age", as opposed to "this
+# span is an age and the number is wrong". Only the first kind licenses keeping the
+# text: `plausible_age_range` failing says the VALUE is unusable, and an age we could
+# not read is still an age. Getting this distinction wrong would keep "a hundred and
+# twenty" -- out of range, therefore refuted, therefore (wrongly) safe to print.
+_NOT_AN_AGE_CHECKS = ("not_a_measurement",)
+
+
+def age_reading_refuted(entity) -> str:
+    """The deterministic check that proved this span is NOT an age, or "".
+
+    Reads the `value` Resolution off the entity's provenance, so the RULE layer
+    (`second_line._rule_value` for `replace_age`), the safe-direction function and
+    the checker below all ask one question of one record -- the same anti-drift
+    arrangement `owner_survivors` and `support_for` use.
+    """
+    res = (getattr(entity, "provenance", None) or {}).get("value")
+    failed = tuple(getattr(res, "checks_failed", ()) or ())
+    return ", ".join(f for f in failed if f in _NOT_AN_AGE_CHECKS)
+
+
+def keep_only_if_refuted_as_an_age(value, ctx) -> CheckOutcome:
+    """Checker for `replace_age=False` (let an age span's text survive verbatim).
+
+    An age is a quasi-identifier -- "sixty-eight" plus a holler plus "miner" is one
+    household -- so the only span this pipeline will print back is one it has
+    positively established is NOT an age: "the water came up twelve feet". Anything
+    else, including an age neither layer could parse, is replaced.
+    """
+    name = "keep_only_if_refuted_as_an_age"
+    if value is not False:
+        return na(name, "not a keep claim")
+    why = age_reading_refuted(ctx.entity)
+    if not why:
+        return fail(name, "nothing proved this span is anything other than a person's "
+                          "age, and an age is a quasi-identifier; only a span refuted "
+                          f"by {'/'.join(_NOT_AN_AGE_CHECKS)} may be kept")
+    return ok(name, f"the age reading was refuted by {why}")
+
+
+def keep_not_an_explicit_age_phrase(value, ctx) -> CheckOutcome:
+    """A span written as an age is never keepable, whatever the value resolution said.
+
+    The discriminating half of the gate: `keep_only_if_refuted_as_an_age` trusts a
+    checker's verdict, and this one reads the text directly. "sixty-eight years old"
+    is an age in anybody's reading, so if some future refutation ever knocked its
+    value out, the span still must not survive. Same `_AGE_UNIT_AFTER` marker
+    `not_a_measurement` uses, so the two cannot disagree about what an age phrase
+    looks like.
+    """
+    name = "keep_not_an_explicit_age_phrase"
+    if value is not False:
+        return na(name, "not a keep claim")
+    m = ctx.first_mention()
+    if m is None:
+        return na(name, "no span to read")
+    if _AGE_UNIT_AFTER.match(ctx.transcript[m.end:m.end + 24]):
+        return fail(name, f"{m.text!r} is followed by 'years old'; whatever the value "
+                          f"resolution concluded, this reads as a person's age")
+    return ok(name, "the span is not written as an explicit age phrase")

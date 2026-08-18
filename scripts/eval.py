@@ -97,6 +97,11 @@ def _build_detections(text: str, gold: dict):
     for p in gold["people"]:
         for form in p["forms"]:
             add(form, "PERSON")
+    # The speaker's own name, when the transcript states it -- see the same note in
+    # `demo_utils.detections_from_gold`. Kept out of `people` so clustering and
+    # relation scoring still describe THIRD PARTIES only.
+    for form in (gold.get("interviewee") or {}).get("forms", []):
+        add(form, "PERSON")
     for loc in gold.get("locations", []):
         add(loc["text"], "LOCATION")
     for d in gold.get("dates", []):
@@ -394,6 +399,74 @@ def evaluate_one(tid: str) -> dict:
                       "rep_leaks": lr_leaks, "rep_over": lr_over,
                       "rep_accuracy": _acc(lr_correct, lr_total)}
 
+    # ---------- REDACTION OF DATES AND AGES ----------
+    # `replace_date` / `replace_age` decide whether a temporal span's surface text
+    # survives. Nothing scored them because until recently nothing DECIDED them --
+    # AGE was the one category in the graph with no redaction directive at all, so a
+    # consumer keying off `replace` printed the speaker's ages verbatim.
+    #
+    # Scored with the same two-direction split as people and places, because the
+    # errors are not interchangeable: a LEAK (should replace, kept) is unrecoverable,
+    # an over-redaction costs narrative colour.
+    def _redaction(gold_rows, pool, match=None):
+        total = correct = leaks = over = 0
+        fails = []
+        for row in gold_rows:
+            if "replace" not in row:
+                continue
+            cands = entities_for(row["text"], pool)
+            if not cands:
+                continue
+            total += 1
+            # gold is text-keyed and AGE entities are per-mention, so grade the span
+            # the gold row is actually about (`match` picks it) rather than whichever
+            # one happens to come first.
+            ent = (next((e for e in cands if match(e, row)), cands[0])
+                   if match else cands[0])
+            got = ent.attributes.get("replace", False) is True
+            if got == row["replace"]:
+                correct += 1
+            elif row["replace"] and not got:
+                leaks += 1
+                fails.append((row["text"], "KEPT", "replace"))
+            else:
+                over += 1
+                fails.append((row["text"], "replaced", "keep"))
+        return {"total": total, "correct": correct, "leaks": leaks, "over": over,
+                "accuracy": _acc(correct, total), "fail": fails}
+
+    R["date_redaction"] = _redaction(gold.get("dates", []), date_pool)
+    R["age_redaction"] = _redaction(
+        gold.get("ages", []), age_pool,
+        match=lambda e, row: e.attributes.get("value") is not None
+                             and abs(e.attributes["value"] - row["value"])
+                                 <= row.get("tolerance", 0))
+
+    # ---------- IDENTIFYING OCCUPATIONS ----------
+    # The field that measured nothing before it had a rule layer and checkers: the
+    # model called seven of nine occupations "identifying", which is a signal that
+    # fires on everything. Every occupation in both transcripts is a common job, so
+    # gold is all-False and this row measures whether the checkers hold that line.
+    occ_pool = ents_of("OCCUPATION")
+    id_total = id_correct = id_over = 0
+    id_fail = []
+    for x in gold.get("identifiers", []):
+        if "identifying" not in x:
+            continue
+        ent = entity_for(x["text"], occ_pool)
+        if ent is None:
+            continue
+        id_total += 1
+        got = ent.attributes.get("identifying") is True
+        if got == x["identifying"]:
+            id_correct += 1
+        else:
+            id_over += 1
+            id_fail.append((x["text"], got, x["identifying"]))
+    R["identifying"] = {"total": id_total, "correct": id_correct,
+                        "wrong": id_over, "accuracy": _acc(id_correct, id_total),
+                        "fail": id_fail}
+
     # ---------- OWNERSHIP ----------
     # THE field interviewee-only surrogate generation runs on: which spans belong to
     # the subject. It was resolved, blocked on, and never scored.
@@ -559,6 +632,20 @@ def _print_one(R):
     if l["rep_total"]:
         print(f"  place redac: acc {_fmt(l['rep_accuracy'])}  "
               f"(LEAKS {l['rep_leaks']}, over-redactions {l['rep_over']})")
+    for label, key in (("date redac ", "date_redaction"), ("age redac  ", "age_redaction")):
+        b = R[key]
+        if not b["total"]:
+            continue
+        print(f"  {label}: acc {_fmt(b['accuracy'])}  ({b['correct']}/{b['total']}, "
+              f"LEAKS {b['leaks']}, over-redactions {b['over']})")
+        for txt, got, want in b["fail"]:
+            print(f"      fail      : {txt!r} -> {got} (want {want})")
+    idg = R["identifying"]
+    if idg["total"]:
+        print(f"  identifying: acc {_fmt(idg['accuracy'])}  "
+              f"({idg['correct']}/{idg['total']} occupations, wrong {idg['wrong']})")
+        for txt, got, want in idg["fail"]:
+            print(f"      fail      : {txt!r} -> {got} (want {want})")
     o = R["owner"]
     if o["total"]:
         print(f"  ownership  : acc {_fmt(o['accuracy'])}  "
@@ -584,7 +671,8 @@ def _print_one(R):
     if s["interviewee_identity_reason"]:
         print(f"          reason: {s['interviewee_identity_reason'][:110]}")
     print(f"      interviewee gender: {s['interviewee_gender']!r} "
-          f"[{s['interviewee_gender_action']}]  (unscored: gold has no interviewee block)")
+          f"[{s['interviewee_gender_action']}]"
+          + (f"  -> {iv['gender']}" if iv.get("gender") else ""))
     if s["interviewee_gender_reason"] and s["interviewee_gender_action"] != "confirm":
         print(f"          reason: {s['interviewee_gender_reason'][:100]}")
     if s["blocking"]:
@@ -595,7 +683,7 @@ def _print_one(R):
 
 def _accumulate(agg, R):
     for k in ("cluster", "rel", "gender", "replace", "dates", "ages", "locations",
-              "owner"):
+              "owner", "date_redaction", "age_redaction", "identifying"):
         bucket = agg.setdefault(k, {})
         for f, v in R[k].items():
             if isinstance(v, (int, float)) and not isinstance(v, bool):
@@ -645,6 +733,17 @@ def _print_aggregate(agg, n=None):
     if l.get("rep_total"):
         print(f"  place redaction   : {_fmt(_acc(l['rep_correct'], l['rep_total']))}  "
               f"(LEAKS {l['rep_leaks']}, over-redactions {l['rep_over']})")
+    for label, key in (("date redaction   ", "date_redaction"),
+                       ("age redaction    ", "age_redaction")):
+        b = agg.get(key) or {}
+        if b.get("total"):
+            print(f"  {label} : {_fmt(_acc(b['correct'], b['total']))}  "
+                  f"({b['correct']}/{b['total']}, LEAKS {b['leaks']}, "
+                  f"over-redactions {b['over']})")
+    idg = agg.get("identifying") or {}
+    if idg.get("total"):
+        print(f"  identifying (occ) : {_fmt(_acc(idg['correct'], idg['total']))}  "
+              f"({idg['correct']}/{idg['total']}, wrong {idg['wrong']})")
     o = agg.get("owner") or {}
     if o.get("total"):
         print(f"  ownership accuracy: {_fmt(_acc(o['correct'], o['total']))}  "

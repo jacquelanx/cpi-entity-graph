@@ -5,8 +5,11 @@ with, per transcript:
   - the full pipeline walkthrough (all stages) + the entity graph,
   - a "Two-layer review" panel: agreements / suggestions / conflicts between the
     rules and the LLM, where suggestions and conflicts can be resolved
-    (accept / reject) and exported,
-and, up top, a rules-only vs rules+LLM metrics comparison.
+    (accept / reject) and exported.
+
+The page opens straight on the transcript tabs. For the rules-only baseline, build
+`scripts/dashboard.py`, which renders the identical twelve stages with the second
+line switched off.
 
     ./venv/bin/python3 scripts/llm_report.py
 
@@ -35,6 +38,7 @@ OUT = REPO_ROOT / "tests" / "llm_report.html"
 TITLES = {
     "interview_001": "Gulf Coast Vietnamese shrimping family",
     "interview_002": "Appalachian coal-mining family",
+    "interview_003": "Chicago steel-mill family (short demo)",
 }
 
 
@@ -202,68 +206,7 @@ def _rec_section(tid, agree, sugg, conflict, unverified):
             + "</div></section>")
 
 
-# ---------- metrics aggregation + comparison ----------
-def _agg(Rs):
-    s = lambda k, f: sum(R[k][f] for R in Rs)
-    tp, pred, gold = s("rel", "tp"), s("rel", "pred"), s("rel", "gold")
-
-    def iv(field, verdict):
-        return sum(1 for R in Rs if (R.get("interviewee") or {}).get(field) == verdict)
-
-    return {
-        "clus_recall": s("cluster", "exact") / max(1, s("cluster", "gold")),
-        "over_merges": s("cluster", "over_merges"),
-        "splits": s("cluster", "splits"),
-        "rel_prec": tp / max(1, pred), "rel_recall": tp / max(1, gold),
-        "gender_recall": s("gender", "correct") / max(1, s("gender", "total")),
-        "leaks": s("replace", "leaks"),
-        # The rows interviewee-only surrogate generation actually runs on. The table
-        # used to show "Privacy leaks" alone, computed over PEOPLE only
-        # (`eval.py` iterates `gold["people"]`), so a kept village, a misattributed
-        # phone number and a wrong gender for the subject were all invisible here.
-        "place_leaks": s("locations", "rep_leaks"),
-        "own_acc": s("owner", "correct") / max(1, s("owner", "total")),
-        "own_wrong": s("owner", "wrong"),
-        "own_missing": s("owner", "missing"),
-        "iv_gender": f"{iv('gender', 'correct')}/{len(Rs)}"
-                     + (f" WRONG {iv('gender', 'wrong')}" if iv('gender', 'wrong') else ""),
-        "iv_identity": f"{iv('identity', 'correct')}/{len(Rs)}"
-                       + (f" WRONG {iv('identity', 'wrong')}" if iv('identity', 'wrong') else ""),
-        "blocking": sum(len(R["second_line"]["blocking"]) for R in Rs),
-    }
-
-
-def _cmp_table(rules, llm):
-    def pct(x):
-        return f"{x * 100:.1f}%"
-    rows = [
-        ("Clustering recall", pct(rules["clus_recall"]), pct(llm["clus_recall"])),
-        ("Over-merges", rules["over_merges"], llm["over_merges"]),
-        ("Splits (unmerged)", rules["splits"], llm["splits"]),
-        ("Relation precision", pct(rules["rel_prec"]), pct(llm["rel_prec"])),
-        ("Relation recall", pct(rules["rel_recall"]), pct(llm["rel_recall"])),
-        ("Privacy leaks &mdash; people", rules["leaks"], llm["leaks"]),
-        ("Privacy leaks &mdash; places", rules["place_leaks"], llm["place_leaks"]),
-        ("Ownership accuracy", pct(rules["own_acc"]), pct(llm["own_acc"])),
-        ("&nbsp;&nbsp;wrong owner", rules["own_wrong"], llm["own_wrong"]),
-        ("&nbsp;&nbsp;unresolved owner", rules["own_missing"], llm["own_missing"]),
-        ("Interviewee identity", rules["iv_identity"], llm["iv_identity"]),
-        ("Interviewee gender", rules["iv_gender"], llm["iv_gender"]),
-        ("Blocking fields (need a human)", rules["blocking"], llm["blocking"]),
-    ]
-    # labels carry deliberate entities (&mdash;, &nbsp;) so they are NOT escaped
-    trs = "".join(
-        f"<tr><td>{m}</td><td>{r}</td><td class='hl'>{l}</td></tr>"
-        for m, r, l in rows)
-    return ("<table class='cmp'><thead><tr><th>metric</th><th>rules only</th>"
-            "<th>rules + LLM</th></tr></thead><tbody>" + trs + "</tbody></table>")
-
-
 _EXTRA_CSS = """
-.cmp{border-collapse:collapse;width:100%;max-width:560px;margin:6px 0 30px;font-size:14px;}
-.cmp th,.cmp td{border-bottom:1px solid var(--line);padding:8px 12px;text-align:left;}
-.cmp th{font-size:12px;color:var(--muted);font-weight:600;}
-.cmp td.hl{font-weight:600;}
 .rec-cols{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;}
 .rec-col h4{font-size:13px;margin:0 0 10px;font-weight:600;display:flex;gap:8px;align-items:center;}
 .rec-col .cnt{font-size:11px;color:var(--muted);background:var(--panel);border-radius:20px;padding:1px 8px;}
@@ -329,28 +272,15 @@ def build():
     kg_eval = _load_eval()          # imported with KG_USE_LLM=1 -> _LLM is set
 
     tabs, panels = [], []
-    llm_R, rules_R = [], []
     for idx, tid in enumerate(all_tids()):
         print(f"  {tid}: pipeline (rules+LLM) ...", flush=True)
         case = load_case(tid, trace=True)          # LLM on via env
         print(f"  {tid}: metrics ...", flush=True)
-        m_llm = kg_eval.evaluate_one(tid)          # with LLM (merge adjudicator)
-        # RULES ONLY -- and the env var has to go with it. This module sets
-        # KG_USE_LLM=1 at import, and `run_pipeline` re-acquires `default_client()`
-        # whenever it is handed `llm=None` with that variable set. So clearing
-        # `kg_eval._LLM` alone did NOT disable the LLM: the "rules only" column was a
-        # second rules+LLM run, which is why every row of the comparison table below
-        # used to show two identical numbers.
-        kg_eval._LLM, saved = None, kg_eval._LLM
-        os.environ.pop("KG_USE_LLM", None)
-        try:
-            m_rules = kg_eval.evaluate_one(tid)
-        finally:
-            os.environ["KG_USE_LLM"] = "1"
-            kg_eval._LLM = saved
-        llm_R.append(m_llm)
-        rules_R.append(m_rules)
-
+        m_llm = kg_eval.evaluate_one(tid)
+        # No second, LLM-disabled pass any more. It existed only to fill the
+        # "rules only" column of the comparison table at the top of the page, and
+        # it doubled the build time; `scripts/dashboard.py` is the rules-only
+        # baseline and renders the identical twelve stages.
         agree, sugg, conflict, unverified = reconcile_items(case)
         active = " active" if idx == 0 else ""
         num = tid.split("_")[1]
@@ -363,18 +293,11 @@ def build():
             f"{render.transcript_panel(case, m_llm)}"
             f"<div class='stages'>{_rec_section(tid, agree, sugg, conflict, unverified)}</div></div>")
 
-    cmp = _cmp_table(_agg(rules_R), _agg(llm_R))
     return f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Two-layer report &middot; rules &times; LLM</title>
 <style>{render.CSS}{_EXTRA_CSS}</style></head>
 <body><div class="wrap">
-  <h1>Rules &times; LLM &mdash; two-layer report</h1>
-  <p class="lede">Both the deterministic ruleset and the local LLM layer, run on all {len(tabs)} sample
-     transcripts. Each tab shows the pipeline, the entity graph, and a two-layer review where
-     suggestions and conflicts can be resolved. Metrics assume a perfect detector (upper bound).</p>
-  <h2 style="font-size:16px;font-weight:600;margin:22px 0 8px">Performance: rules only vs rules + LLM</h2>
-  {cmp}
   <div class="tabs">{''.join(tabs)}</div>
   {''.join(panels)}
   <div id="resolve-bar"><span id="rcount">0 resolved</span>

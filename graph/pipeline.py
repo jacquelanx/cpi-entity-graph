@@ -394,6 +394,10 @@ def run_pipeline(transcript_id, transcript, mentions, metadata=None,
         "coref_ran": coref_ran,
         "ambiguous": ambiguous,
         "identity": identity_res,
+        # carried out so the artifact writer needs nothing but `info`: the
+        # date-shifter validates every shift against this, and it used to be
+        # readable only by the caller that supplied the metadata.
+        "interview_date": interview_date,
         "llm_ran": llm_ran,
         "llm_model": getattr(llm, "model", None) if llm_ran else None,
         "ledger": ledger,
