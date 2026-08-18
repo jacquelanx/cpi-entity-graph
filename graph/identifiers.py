@@ -21,6 +21,48 @@ ID_CATS = ("PHONE", "EMAIL", "SSN_OR_ID", "USERNAME_HANDLE", "OCCUPATION")
 _SSN = re.compile(r"^\d{3}-?\d{2}-?\d{4}$")
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
+# RULE layer for `identifying`: occupations common enough that knowing one tells
+# you nothing about WHICH person you are looking at. `identifying` used to be
+# LLM-only with no rule to run first and no checker to refute it, and the model
+# duly returned True for seven of the nine occupations in the sample transcripts
+# -- including "miners" in a coal-mining interview and "preacher" in a church
+# one. A signal that fires on everything carries no information.
+#
+# Membership here means NOT identifying (the rule fills `identifying=False`); an
+# occupation absent from the list is left UNSET so the LLM can fill it, gated by
+# `checks/identifiers.identifying_not_a_common_occupation`. Kept deliberately
+# generous: the cost of calling a common job common is a missed review flag on a
+# span that is redacted anyway (every OCCUPATION is `replace=True`), while the
+# cost of the reverse is the noise that made this field useless.
+COMMON_OCCUPATIONS = {
+    # extraction / trades / manual
+    "miner", "miners", "coal miner", "farmer", "farmers", "fisherman", "fishermen",
+    "shrimper", "deckhand", "welder", "mechanic", "carpenter", "plumber",
+    "electrician", "painter", "roofer", "mason", "logger", "trucker",
+    "truck driver", "driver", "laborer", "labourer", "factory worker", "millworker",
+    "mill worker", "steelworker", "foreman", "machinist", "operator", "janitor",
+    "custodian", "housekeeper", "maid", "seamstress", "tailor", "butcher", "baker",
+    # service / retail / food
+    "waitress", "waiter", "server", "cook", "chef", "dishwasher", "bartender",
+    "cashier", "clerk", "salesman", "saleswoman", "shopkeeper", "barber",
+    "hairdresser", "beautician",
+    # care / education / clerical
+    "nurse", "nurses", "nurse's aide", "aide", "caregiver", "babysitter", "nanny",
+    "teacher", "teachers", "schoolteacher", "substitute teacher", "secretary",
+    "receptionist", "bookkeeper", "accountant", "typist",
+    # uniformed / civic / faith
+    "soldier", "sailor", "marine", "policeman", "police officer", "officer",
+    "firefighter", "fireman", "mailman", "postman", "preacher", "pastor",
+    "minister", "priest",
+    # household / status
+    "housewife", "homemaker", "student", "retired", "unemployed", "volunteer",
+}
+
+
+def _is_common_occupation(text: str) -> bool:
+    t = re.sub(r"\s+", " ", (text or "").strip().lower()).strip(".,;:")
+    return t in COMMON_OCCUPATIONS
+
 
 def _normalize(cat: str, text: str):
     """Return (subtype, attributes) for one identifier span. `kind` mirrors the
@@ -50,6 +92,10 @@ def _normalize(cat: str, text: str):
     elif cat == "OCCUPATION":
         attrs["occupation"] = t.lower()
         subtype = "OCCUPATION"
+        # rule layer for `identifying`: a common job is not identifying. An
+        # uncommon one is left UNSET for the LLM to fill and the checkers to gate.
+        if _is_common_occupation(t):
+            attrs["identifying"] = False
     return subtype, attrs, flag
 
 

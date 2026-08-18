@@ -1,50 +1,41 @@
 """
-LLM use #2: the open-world classifier (Class B -- flagged suggestions).
-The deterministic tables (gazetteer, public-figure list, public-event table,
-kinship/professional word sets, date + age parsers) are small and can never
-cover everything. Whenever a rule MISSES -- a list doesn't contain the value, or
-a parser leaves it unresolved -- this module asks the local LLM and records the
-answer as a FLAGGED SUGGESTION on the entity.
+The open-world PROPOSER. The deterministic tables (gazetteer, public-figure list,
+public-event table, kinship/professional word sets, date + age parsers) are small
+and can never cover everything. This module asks the local LLM the same questions
+the tables answer, for EVERY entity, and returns the answers as plain data:
 
-Policy (identical to the rest of the layer): suggestions are additive and never
-authoritative. The LLM never overwrites a rule-set value and never lowers
-redaction; it only fills a gap the rules left and raises a review flag.
+    {entity_id: {field: {"value": ..., "confidence": ..., <extras>}}}
 
-Second-line coverage added here, one per rule table that could miss:
-  PERSON      -- public-figure list  -> `classify_person_public`
-                 (CO-SIGN: a name the rules KEPT unredacted on the strength of the
-                 closed PUBLIC_FIGURES list is kept only if the LLM ALSO affirms it
-                 is a public figure; otherwise redaction is raised. The closed list
-                 is never the sole authority for keeping a name unredacted.)
-              -- FAMILY/PROFESSIONAL subtype (kinship/professional regex)
-                 -> relationship hint in the same call -> `suggested_subtype`
-  LOCATION    -- gazetteer            -> `classify_location`
-  DATE_ANCHOR -- public-event table   -> `resolve_public_event`
-  DATE_ABSOLUTE / DATE_OF_BIRTH / DATE_RELATIVE
-              -- dateutil / relative-date regex -> `resolve_date`
-  AGE         -- word-number / decade maps      -> `resolve_age`
+It decides nothing and mutates nothing. `graph.second_line.resolve_all` arbitrates:
+a field the rules filled gets CHECKED, a field they left empty gets FILLED only if
+every deterministic checker in `graph/checks/` passes.
 
-For DATE_* and AGE the second line now does BOTH jobs: it CHECKS a value the rule
-resolved (flagging a meaningful divergence for review, never overwriting it) and
-FILLS a value the rule missed (`suggested_value`). Only the deterministic value is
-ever used downstream (e.g. date-shifting); the LLM's is advisory.
+Two behaviours changed when this became a proposer, both deliberate:
+
+  * every field is proposed UNCONDITIONALLY. The old pass skipped locations the
+    gazetteer had typed (`if e.subtype: continue`) and people the rules had typed
+    FAMILY/PROFESSIONAL, so on those the rule tables were the sole authority and a
+    wrong table hit was unfalsifiable.
+  * the public-figure CO-SIGN is no longer implemented here. It is now the
+    `replace` field's `conflict_policy=safe_direction` plus its checkers, which
+    generalizes the same guarantee: agreement is required to KEEP a name, and any
+    disagreement resolves toward more redaction.
+
+Fields proposed, and the rule table each one second-lines:
+  PERSON       replace          <- PUBLIC_FIGURES + `_personal_signal`
+               subtype_person   <- kinship edges / PROFESSIONAL_CONTEXT
+  LOCATION     subtype_location <- gazetteer type
+               location_parent  <- gazetteer parent (-> LOCATED_IN)
+  DATE_ANCHOR  resolved_value   <- ANCHOR_EVENTS
+               shiftable        <- the hardcoded per-category default
+  DATE_*       resolved_value   <- dateutil / relative-date regex
+               approximate      <- the rule's own approximation marker
+  AGE          value            <- word-number / decade maps
+               approximate      <- ditto
 """
 
 from __future__ import annotations
-import re
-from datetime import date as _date
 from .llm import _windows
-
-_YEAR_RE = re.compile(r"\b(?:1[89]\d{2}|20\d{2})\b")
-_MONTH_RE = re.compile(r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)", re.I)
-
-
-def _year_only(text: str) -> bool:
-    """Source names a YEAR but no month -> compare only at year granularity in the
-    CHECK, so an LLM that over-specifies a day ('1921' -> '1921-05-19') can't raise a
-    spurious conflict against a correct year-only rule value."""
-    return bool(_YEAR_RE.search(text)) and not _MONTH_RE.search(text)
-
 
 # Per-category context sizing. A judgment's window is sized to how NON-LOCAL its
 # evidence is: whether someone is a public figure (vs a private namesake) often
@@ -60,92 +51,12 @@ def _ctx(transcript, entity, kind="date") -> str:
                               radius=_RADIUS[kind], max_snips=_MAX_SNIPS[kind]))
 
 
-def _parse_iso(s):
-    """Lenient ISO-date parse (both rule values and the LLM's dates are ISO)."""
-    try:
-        return _date.fromisoformat(str(s)[:10])
-    except Exception:
-        return None
-
-
 def _conf_str(confidence) -> str:
     """Normalize the model's confidence to a short tag for review triage. Review-only
     suggestions are accepted at ANY confidence (they never leak or auto-act); the tag
     lets a human sort high- from low-confidence flags."""
     c = str(confidence or "").strip().lower()
     return c or "unstated"
-
-
-# --------------------------------------------------------------------------
-# Reconcilers: the date/age second line now both CHECKS a rule-resolved value
-# and FILLS a rule miss.
-#   * rule value UNSET  -> FILL: record `suggested_value` (+ approximate) as before.
-#   * rule value SET    -> CHECK: never overwrite it (date-shifting must act only on
-#     the deterministic value). Agreement records `*_confirmed`; a divergence raises
-#     a CONFLICT flag, but only when it is meaningful -- the model is confident OR
-#     the gap is large -- so an unsure model disagreeing by a day doesn't spam review.
-# --------------------------------------------------------------------------
-def _reconcile_date(e, llm_date, approximate, confidence, tol_days, large_days,
-                    event=None):
-    if not llm_date:
-        return
-    rule_val = e.attributes.get("resolved_value")
-    if rule_val is None:                                    # FILL (rule missed)
-        conf = _conf_str(confidence)                        # any confidence; tagged
-        e.attributes["suggested_value"] = llm_date
-        e.attributes["suggested_value_confidence"] = conf
-        if approximate:
-            e.attributes["suggested_approximate"] = True
-        msg = f"LLM-suggested date {llm_date} (rule could not resolve it; confidence {conf})"
-        if event:
-            e.attributes["suggested_event"] = event
-            msg += f" [{event}]"
-        e.flag_entity(msg + "; review")
-        return
-    rd, ld = _parse_iso(rule_val), _parse_iso(llm_date)     # CHECK (rule resolved)
-    if rd is None or ld is None:
-        return
-    src = e.mentions[0].text if e.mentions else ""
-    if _year_only(src):
-        # year-only source ("1921"): only a DIFFERENT YEAR is a real conflict
-        if rd.year == ld.year:
-            e.attributes["date_confirmed"] = True
-        elif confidence == "high":
-            e.attributes["llm_check_value"] = llm_date
-            e.flag_entity(f"LLM resolved this to {llm_date} (year {ld.year}), differs "
-                          f"from the rule year {rd.year}; rule value kept -- review")
-        return
-    diff = abs((rd - ld).days)
-    if diff <= tol_days:
-        e.attributes["date_confirmed"] = True
-        return
-    if confidence == "high" or diff > large_days:
-        e.attributes["llm_check_value"] = llm_date
-        e.flag_entity(f"LLM resolved this date to {llm_date}, differs from the rule "
-                      f"value {rule_val} by {diff} days; rule value kept -- review")
-
-
-def _reconcile_age(e, llm_val, approximate, confidence, tol, large):
-    if not isinstance(llm_val, int):
-        return
-    rule_val = e.attributes.get("value")
-    if rule_val is None:                                    # FILL (rule missed)
-        conf = _conf_str(confidence)                        # any confidence; tagged
-        e.attributes["suggested_value"] = llm_val
-        e.attributes["suggested_value_confidence"] = conf
-        if approximate:
-            e.attributes["suggested_approximate"] = True
-        e.flag_entity(f"LLM-suggested age {llm_val} "
-                      f"(rule could not parse it; confidence {conf}); review")
-        return
-    diff = abs(rule_val - llm_val)                          # CHECK (rule resolved)
-    if diff <= tol:
-        e.attributes["age_confirmed"] = True
-        return
-    if confidence == "high" or diff > large:
-        e.attributes["llm_check_value"] = llm_val
-        e.flag_entity(f"LLM read this age as {llm_val}, differs from the rule value "
-                      f"{rule_val} by {diff}; rule value kept -- review")
 
 
 # --------------------------------------------------------------------------
@@ -183,11 +94,15 @@ def classify_person_public(client, transcript, entity) -> dict | None:
 # Sub-classifier 2: type/parent of a location not in the gazetteer
 # --------------------------------------------------------------------------
 _LOC_SYS = (
-    "You classify a place mentioned in an interview. Give its geographic TYPE and "
-    "the larger place it sits inside, if clear. Reply with ONLY a JSON object: "
-    '{"type": one of ["country","state","region","city","neighborhood","street",'
-    '"institution","landmark","other"], "parent": "<larger place, or empty>", '
-    '"confidence": "high" or "low"}.'
+    "You classify a place mentioned in an interview. Give its geographic TYPE, "
+    "the larger place it sits inside if clear, and whether the place is specific "
+    "enough that naming it would help identify the particular family or person "
+    "being interviewed. A country, state or large region identifies nobody; a "
+    "small town, a village, a holler, a neighborhood, a street, a named church, "
+    "school or employer often identifies a household. Reply with ONLY a JSON "
+    'object: {"type": one of ["country","state","region","city","neighborhood",'
+    '"street","institution","landmark","other"], "parent": "<larger place, or '
+    'empty>", "identifying": true or false, "confidence": "high" or "low"}.'
 )
 
 
@@ -204,13 +119,21 @@ def classify_location(client, transcript, entity) -> dict | None:
 # --------------------------------------------------------------------------
 # Sub-classifier 3: fixed date of a public event not in the anchor table
 # --------------------------------------------------------------------------
+# `approximate` is asked for here as well as on the other date categories. It was
+# missing, and `second_line._fields_for` resolves `approximate` for EVERY date
+# category -- so for any anchor phrase outside `ANCHOR_EVENTS` the rule set nothing
+# and the model was never asked, making it the one field in the registry with no
+# second layer at all. It rendered as clean because `llm_report` drops
+# both-layers-blind rows.
 _EVENT_SYS = (
     "A date reference in an interview names a public 'anchor' event. If it is a "
     "well-known public event with a fixed calendar date, give that date. If you "
     "are not certain of the exact date, or it is not a public event, leave the "
-    "date empty. Reply with ONLY a JSON object: "
+    "date empty. Also say whether the reference is APPROXIMATE: a named public "
+    "event has one fixed calendar date and is NOT approximate, while a vague or "
+    "hedged reference to a period is. Reply with ONLY a JSON object: "
     '{"event": "<name, or empty>", "date": "YYYY-MM-DD or empty", '
-    '"confidence": "high" or "low"}.'
+    '"approximate": true or false, "confidence": "high" or "low"}.'
 )
 
 
@@ -233,9 +156,13 @@ _DATE_SYS = (
     "You resolve a single date expression from an interview to a calendar date. "
     "You are given the expression and, for relative expressions, the interview "
     "date to anchor against. If you can resolve it to a specific day with "
-    "confidence, give it; otherwise leave the date empty. Do NOT guess. Reply "
-    'with ONLY a JSON object: {"date": "YYYY-MM-DD or empty", '
-    '"approximate": true or false, "confidence": "high" or "low"}.'
+    "confidence, give it; otherwise leave the date empty. Do NOT guess. Also say "
+    "whether the expression refers to a WELL-KNOWN PUBLIC EVENT with a fixed "
+    "calendar date (a hurricane, an election, an attack, a disaster) as opposed to "
+    "a private date in this family's life; give the event's name if so, and leave "
+    "it empty otherwise. Reply with ONLY a JSON object: "
+    '{"date": "YYYY-MM-DD or empty", "approximate": true or false, '
+    '"public_event": "<event name, or empty>", "confidence": "high" or "low"}.'
 )
 
 
@@ -275,118 +202,143 @@ def resolve_age(client, transcript, entity) -> dict | None:
 
 
 # --------------------------------------------------------------------------
-# The pass: run the right sub-classifier per entity and add flagged suggestions.
-# Review-only suggestions (public-figure candidate, subtype, location type, and the
-# date/age FILL of a rule miss) are accepted at ANY confidence -- they can never leak
-# or auto-act -- and are tagged with the model's confidence for triage. The one place
-# a confidence bar remains is the date/age CHECK path (_reconcile_*), which only
-# ACCUSES a resolved rule value of being wrong when the model is confident OR the gap
-# is large, so review isn't spammed by an unsure model.
+# Sub-classifier 6: which date expression is an age stated WITH?
+# Second line for `location_dates.age_date_constraints`, whose rule is purely
+# positional (the single nearest date within one sentence). An age and the date it
+# was co-stated with must stay arithmetically consistent after date-shifting, so a
+# wrong pairing silently corrupts the shift.
 # --------------------------------------------------------------------------
-def openworld_pass(transcript: str, entities: list, llm, interview_date=None) -> None:
+_ANCHOR_SYS = (
+    "An interview mentions someone's AGE. If the surrounding text also states the "
+    "date or year that age was true (\"I enlisted in September 2008. I was "
+    "eighteen\"), quote that date expression EXACTLY as it appears in the text. If "
+    "no date in this passage pins the age, leave it empty. Do NOT guess and do NOT "
+    'invent a date. Reply with ONLY a JSON object: {"date_text": "<exact quote or '
+    'empty>", "confidence": "high" or "low"}.'
+)
+
+
+def resolve_age_anchor(client, transcript, entity) -> dict | None:
+    if client is None or not client.available():
+        return None
+    phrase = entity.mentions[0].text if entity.mentions else "?"
+    prompt = (f'Age expression: "{phrase}"\nContexts:\n'
+              + _ctx(transcript, entity, "date")
+              + "\n\nWhich date expression in this passage is that age stated with?")
+    return client.judge(prompt, system=_ANCHOR_SYS)
+
+
+# --------------------------------------------------------------------------
+# The PROPOSER. This module no longer mutates entities and no longer decides
+# anything: it runs the right sub-classifier per entity and returns plain dicts
+#
+#     {entity_id: {field: {"value": ..., "confidence": ..., <extras>}}}
+#
+# for `graph.second_line.resolve_all` to arbitrate. Plain dicts keep the one-way
+# dependency (graph -> llm_layer) intact.
+#
+# Every field is proposed UNCONDITIONALLY, whether or not the rule already filled
+# it. That is the point of the unification: a filled field gets CHECKED, an empty
+# one gets FILLED, and the old `if e.subtype: continue` short-circuit -- which
+# meant a gazetteer HIT was never double-checked -- is gone.
+# --------------------------------------------------------------------------
+def openworld_propose(transcript: str, entities: list, llm, interview_date=None) -> dict:
+    out: dict = {}
     if llm is None or not llm.available():
-        return
+        return out
+
+    def put(e, field, value, confidence=None, **extra):
+        if value is None or value == "":
+            return
+        out.setdefault(e.entity_id, {})[field] = {
+            "value": value, "confidence": _conf_str(confidence), **extra}
 
     for e in entities:
         if e.category == "PERSON":
-            # skip the interviewee (no mentions) and anyone the rules already tied
-            # to the interviewee's own life (family / professional -- already
-            # replace=True). PUBLIC_FIGURE still passes -- it gets the CO-SIGN below
-            # -- as do unset-subtype persons, which get the relationship suggestion.
-            if not e.mentions or e.subtype in ("FAMILY", "PROFESSIONAL"):
+            # The interviewee is never a public-figure candidate and never gets a
+            # FAMILY/PROFESSIONAL subtype -- it is the subject of the interview. The
+            # `role` marker rather than an import keeps this module free of any
+            # dependency on `graph`; the mention check alone stopped working once the
+            # identification stage started giving the interviewee real name spans.
+            if e.attributes.get("role") == "interviewee" or not e.mentions:
                 continue
             v = classify_person_public(llm, transcript, e)
             if not v:
-                continue                                # no LLM answer -> rules stand
-            if e.subtype == "PUBLIC_FIGURE":
-                # CO-SIGN. The rules KEPT this listed name unredacted on the strength
-                # of the closed PUBLIC_FIGURES list. That list must NOT be the sole
-                # authority for KEEPING a name, because keeping is the leak-prone
-                # direction (a private namesake of a celebrity would leak). Require
-                # the LLM to AFFIRM the name is a public figure; if it does not --
-                # says private, names a personal role, or is simply unsure -- raise
-                # redaction. Confidence is deliberately NOT required here: moving
-                # toward MORE redaction is always the safe direction, so any answer
-                # short of an explicit "public figure" tips us back to redacting.
-                if v.get("public_figure") is True:
-                    e.attributes["public_figure_cosign"] = True
-                else:
-                    e.attributes["replace"] = True
-                    e.attributes["public_figure_cosign"] = False
-                    who = v.get("who") or "context suggests a private individual"
-                    e.flag_entity("LLM did not confirm this listed name as a public "
-                                  f"figure ({who}); redacted for safety -- the "
-                                  "public-figure list alone is not sufficient to "
-                                  "keep a name unredacted")
                 continue
-            # unlisted person: flag (for human review) if the model thinks it's a
-            # public figure -- but NEVER lower redaction automatically. Accepted at
-            # ANY confidence (a review-only flag that only ever KEEPS redaction), and
-            # tagged so a reviewer can triage high- vs low-confidence flags.
-            if v.get("public_figure"):
-                conf = _conf_str(v.get("confidence"))
-                e.attributes["candidate_public_figure"] = v.get("who") or True
-                e.attributes["candidate_public_figure_confidence"] = conf
-                e.attributes["replace"] = True     # NEVER flip to False here
-                who = v.get("who") or "public figure"
-                e.flag_entity(f"LLM suggests this is a public figure ({who}; confidence "
-                              f"{conf}); review whether to keep it unredacted")
-            # second line for the FAMILY/PROFESSIONAL subtype (kinship + professional
-            # regex tables): when the rules left the subtype UNSET, record the LLM's
-            # relationship read as a suggestion (any confidence, tagged). Never
-            # overwrites a rule subtype.
-            elif e.subtype is None:
-                rel = (v.get("relationship") or "").strip().lower()
-                sub = {"professional": "PROFESSIONAL", "family": "FAMILY"}.get(rel)
-                if sub:
-                    conf = _conf_str(v.get("confidence"))
-                    e.attributes["suggested_subtype"] = sub
-                    e.attributes["suggested_subtype_confidence"] = conf
-                    e.flag_entity(f"LLM suggests this person is {rel} (rule left "
-                                  f"subtype unset; confidence {conf}); review")
+            conf = v.get("confidence")
+            is_public = v.get("public_figure") is True
+            # `replace` is proposed for EVERY named person, including ones the rules
+            # already typed FAMILY/PROFESSIONAL -- previously those were skipped, so
+            # the rules were the sole authority on them.
+            put(e, "replace", not is_public, conf, who=v.get("who") or "")
+            rel = (v.get("relationship") or "").strip().lower()
+            sub = {"professional": "PROFESSIONAL", "family": "FAMILY"}.get(rel)
+            if sub:
+                put(e, "subtype_person", sub, conf)
 
         elif e.category in ("LOCATION", "INSTITUTION"):
-            if e.subtype:                           # already typed by the gazetteer
-                continue
             v = classify_location(llm, transcript, e)
-            if v and v.get("type"):
-                conf = _conf_str(v.get("confidence"))       # any confidence; tagged
-                e.attributes["suggested_type"] = v["type"]
-                e.attributes["suggested_type_confidence"] = conf
-                msg = f"LLM-suggested location type '{v['type']}'"
-                if v.get("parent"):
-                    e.attributes["suggested_parent"] = v["parent"]
-                    msg += f", inside '{v['parent']}'"
-                e.flag_entity(f"{msg} (confidence {conf}); review")
+            if not v:
+                continue
+            put(e, "subtype_location", (v.get("type") or "").strip(),
+                v.get("confidence"))
+            put(e, "location_parent", (v.get("parent") or "").strip(),
+                v.get("confidence"))
+            # `replace_location`: the model's identifying-ness judgment, second-lined
+            # against the gazetteer granularity rule in
+            # `location_dates.infer_location_replace`. `put` skips falsy values, so
+            # the boolean is passed explicitly.
+            if isinstance(v.get("identifying"), bool):
+                put(e, "replace_location", bool(v["identifying"]),
+                    v.get("confidence"))
 
         elif e.category == "DATE_ANCHOR":
-            # second line for the ANCHOR_EVENTS table: CHECK a resolved anchor date
-            # against the model (a wrong/colliding table entry gets flagged) and
-            # FILL an event the table doesn't list. Public events are exact, so the
-            # agreement tolerance is tight.
             v = resolve_public_event(llm, transcript, e)
-            if v:
-                _reconcile_date(e, v.get("date"), False, v.get("confidence"),
-                                tol_days=3, large_days=30, event=v.get("event"))
+            if not v:
+                continue
+            put(e, "resolved_value", v.get("date"), v.get("confidence"),
+                event=v.get("event") or "")
+            # a named event with a date is the model's claim that this is a real
+            # public event -> propose shiftable=False; otherwise propose nothing and
+            # let the rule's own value stand or be flagged.
+            if v.get("date") and v.get("event"):
+                put(e, "shiftable", False, v.get("confidence"))
+            # `approximate` for an anchor. Taken from the model when it answered, and
+            # otherwise DERIVED: a named event with a fixed calendar date is exact by
+            # construction, which is the same reasoning
+            # `location_dates.resolve_date_entity` applies to a phrase it finds in
+            # ANCHOR_EVENTS. `checks/approximate.anchor_in_table_is_exact` gates it.
+            if v.get("approximate") is not None:
+                put(e, "approximate", bool(v["approximate"]), v.get("confidence"))
+            elif v.get("date") and v.get("event"):
+                put(e, "approximate", False, v.get("confidence"))
 
         elif e.category in ("DATE_ABSOLUTE", "DATE_OF_BIRTH", "DATE_RELATIVE"):
-            # second line for the date parsers (dateutil + relative-date regex):
-            # CHECK the rule's resolved value and FILL a miss. A CHECK never touches
-            # resolved_value, so date-shifting still acts only on the rule value.
-            # Absolute/DOB dates allow a month of slack (year-less / day-less inputs);
-            # relative dates are estimates, so more.
             v = resolve_date(llm, transcript, e, interview_date)
-            if v:
-                tol, large = ((60, 400) if e.category == "DATE_RELATIVE"
-                              else (31, 366))
-                _reconcile_date(e, v.get("date"), v.get("approximate"),
-                                v.get("confidence"), tol_days=tol, large_days=large)
+            if not v:
+                continue
+            event = (v.get("public_event") or "").strip()
+            put(e, "resolved_value", v.get("date"), v.get("confidence"),
+                event=event)
+            if v.get("approximate") is not None:
+                put(e, "approximate", bool(v["approximate"]), v.get("confidence"))
+            # `shiftable` is now second-lined for EVERY date category, not just
+            # DATE_ANCHOR -- the rule sets it on all four. A private date is
+            # shiftable; a named public event is the model's claim that it is not,
+            # and `checks/dates.is_real_public_event` refuses that claim outright
+            # for a non-anchor category.
+            put(e, "shiftable", not bool(event), v.get("confidence"))
 
         elif e.category == "AGE":
-            # second line for the age parser (word-number / decade maps): CHECK the
-            # rule's numeric value and FILL a miss. One year of slack absorbs
-            # decade-rounding ("late forties" -> 48 vs 47).
             v = resolve_age(llm, transcript, e)
             if v:
-                _reconcile_age(e, v.get("value"), v.get("approximate"),
-                               v.get("confidence"), tol=1, large=5)
+                if isinstance(v.get("value"), int):
+                    put(e, "value", v["value"], v.get("confidence"))
+                if v.get("approximate") is not None:
+                    put(e, "approximate", bool(v["approximate"]), v.get("confidence"))
+            a = resolve_age_anchor(llm, transcript, e)
+            if a:
+                put(e, "stated_with", (a.get("date_text") or "").strip(),
+                    a.get("confidence"))
+
+    return out

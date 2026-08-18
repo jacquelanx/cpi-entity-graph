@@ -75,10 +75,25 @@ def _intervening_person(transcript: str, a: int, b: int) -> bool:
     return a < b and bool(_NEW_PERSON.search(transcript[a:b]))
 
 
-def _nearest_person(transcript, persons, pos: int, want_gender):
-    """Nearest preceding person the pronoun could refer to, or None."""
+def _nearest_person(transcript, persons, pos: int, want_gender, exclude=None):
+    """Nearest preceding person the pronoun could refer to, or None.
+
+    `exclude` is the ALIAS entity itself. A pronoun in an alias cue refers to whoever
+    the alias renames, never to the alias -- but the alias name very often appears just
+    before the cue that introduces it:
+
+        "My little brother, Minh -- Sonny, everybody ended up calling him Sonny"
+
+    Here the nearest preceding mention is the FIRST "Sonny", so the antecedent resolved
+    to the alias entity, `do()` saw `primary is alias_ent` and returned, and Minh/Sonny
+    stayed split -- the single clustering split in the sample transcripts, which no
+    later layer can repair because `same_person` never auto-merges. Excluding the alias
+    lets the search reach Minh.
+    """
+    ex = getattr(exclude, "entity_id", None)
     cands = sorted(
-        ((pos - m.end, m, e) for e in persons for m in e.mentions if m.end <= pos),
+        ((pos - m.end, m, e) for e in persons for m in e.mentions
+         if m.end <= pos and e.entity_id != ex),
         key=lambda t: t[0])
     for gap, m, e in cands:
         if gap > 140:
@@ -102,36 +117,54 @@ def _merge(base, other, persons) -> None:
         persons.remove(other)
 
 
-def apply_alias_cues(transcript: str, persons: list) -> list[tuple[str, str]]:
-    """Merge explicit alias/nickname pairs in place. Returns the merged
-    (kept_id, folded_id) pairs (for tracing)."""
-    merged: list[tuple[str, str]] = []
+def apply_alias_cues(transcript: str, persons: list) -> list[dict]:
+    """Merge explicit alias/nickname pairs in place.
+
+    Returns one MERGE RECORD per applied merge:
+
+        {"a": kept_id, "b": folded_id, "evidence": <cue quote>,
+         "source": "rule", "folded": <the folded Entity object>}
+
+    `graph.second_line._resolve_merges` arbitrates these so a rule merge gets a
+    Resolution, provenance and a ledger row like every other decision -- clustering
+    used to be the one class of decision with none. The folded Entity rides along
+    because it has been removed from `persons` by then, and the `same_person`
+    checkers need both sides of the pair; the pipeline registers it on the
+    CheckContext as an `extra_entities` entry.
+    """
+    merged: list[dict] = []
     if not persons:
         return merged
 
-    def subject_entity(subj, s, e):
+    def subject_entity(subj, s, e, alias_ent=None):
         if subj.lower() in _PRON_GENDER:
-            return _nearest_person(transcript, persons, s, _PRON_GENDER[subj.lower()])
+            return _nearest_person(transcript, persons, s, _PRON_GENDER[subj.lower()],
+                                   exclude=alias_ent)
         return _entity_at(persons, s, e)
 
-    def do(primary, alias_ent):
+    def do(primary, alias_ent, evidence):
         if primary is None or alias_ent is None or primary is alias_ent:
             return
+        rec = {"a": primary.entity_id, "b": alias_ent.entity_id,
+               "evidence": (evidence or "").strip(), "source": "rule",
+               "folded": alias_ent}
         _merge(primary, alias_ent, persons)
-        merged.append((primary.entity_id, alias_ent.entity_id))
+        merged.append(rec)
 
-    # subject + alias, both spans present in the match
+    # subject + alias, both spans present in the match. The alias is resolved FIRST so
+    # the pronoun search can exclude it -- see `_nearest_person`.
     for rx in (_CALL, _AS, _REAL):
         for m in rx.finditer(transcript):
-            primary = subject_entity(m.group(1), m.start(1), m.end(1))
             alias_ent = _entity_at(persons, m.start(2), m.end(2))
-            do(primary, alias_ent)
+            primary = subject_entity(m.group(1), m.start(1), m.end(1), alias_ent)
+            do(primary, alias_ent, m.group(0))
 
     # implicit-subject cues: resolve the antecedent to the nearest person
     for rx in (_BY, _NICK):
         for m in rx.finditer(transcript):
             alias_ent = _entity_at(persons, m.start(1), m.end(1))
-            primary = _nearest_person(transcript, persons, m.start(), None)
-            do(primary, alias_ent)
+            primary = _nearest_person(transcript, persons, m.start(), None,
+                                      exclude=alias_ent)
+            do(primary, alias_ent, m.group(0))
 
     return merged

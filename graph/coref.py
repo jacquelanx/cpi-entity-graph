@@ -94,10 +94,15 @@ def _merge_into(base: Entity, other: Entity, person_entities: list[Entity]) -> N
 
 """
 Run coref and fold its clusters into our entities.
-Returns (entities, merged_pairs, ran_flag). merged_pairs lists only the pairs
-that were ACTUALLY merged (suggestions that were merely flagged are not counted).
+Returns (entities, merge_records, ran_flag). `merge_records` covers every pair the
+coref link PROPOSED and the LLM adjudicated -- the ones it merged (`applied=True`)
+and the ones the LLM vetoed (`applied=False`, `value=False`) -- in the same shape
+`graph/aliases.apply_alias_cues` returns, so `graph.second_line._resolve_merges` can
+give each one a Resolution and a ledger row. Pairs blocked by the deterministic
+gender / same-sentence rules before the LLM was ever consulted are not recorded:
+no LLM decision was made, so there is nothing to arbitrate.
 """
-def apply_coref(transcript: str, person_entities: list[Entity], llm=None) -> tuple[list[Entity], list[tuple[str, str]], bool]:
+def apply_coref(transcript: str, person_entities: list[Entity], llm=None) -> tuple[list[Entity], list[dict], bool]:
     model = FCoref()
     pred = model.predict(texts=[transcript])[0]  # pass in an one-item list and extract the only item
     clusters = pred.get_clusters(as_strings=False)  # see header comment
@@ -147,12 +152,49 @@ def apply_coref(transcript: str, person_entities: list[Entity], llm=None) -> tup
                 if same:
                     if verdict.get("evidence"):
                         base.attributes.setdefault("merge_evidence", verdict["evidence"])
+                    ev = str(verdict.get("evidence") or "")
+                    # TWO records: the coref link is the rule/ML half, the adjudication
+                    # is the LLM half. Emitting only the first labelled the merge
+                    # `source="rule"`, so `second_line._resolve_merges` saw no LLM
+                    # answer and recorded a merge the MODEL had actually decided as
+                    # "rules stand; no LLM answer to confirm them" -- provenance that
+                    # was not merely thin but wrong. With both, the pair resolves
+                    # `confirm` and (via `same_person`'s `unsafe_when`) the checkers
+                    # in graph/checks/merges.py run on it.
+                    rec = {"a": base.entity_id, "b": other.entity_id,
+                           "evidence": ev, "source": "rule", "applied": True,
+                           "folded": other}
+                    merged_pairs.append(rec)
+                    merged_pairs.append({
+                        "a": base.entity_id, "b": other.entity_id, "evidence": ev,
+                        "value": True, "source": "llm", "applied": True,
+                        "confidence": str(verdict.get("confidence") or "unstated")})
                     _merge_into(base, other, person_entities)
-                    merged_pairs.append((base.entity_id, other.entity_id))
-                # LLM declined -> correct separation; no flag
+                else:
+                    # LLM DECLINED. Keeping them apart is (almost always) the right
+                    # call, but it is still an LLM decision that changed who the graph
+                    # thinks exists, and it used to leave NO trace at all: no merge
+                    # record, no Resolution, no ledger row. `merge_strings` emits
+                    # paired rule/llm records for the exactly analogous containment
+                    # veto, so this was the one class of LLM identity decision still
+                    # outside the single arbitration point.
+                    #
+                    # Same shape as the containment veto: the coref link is the rule
+                    # half that WANTED the merge (`applied=False`), the adjudication is
+                    # the LLM half that refused it (`value=False`).
+                    ev = str(verdict.get("evidence") or "")
+                    merged_pairs.append({
+                        "a": base.entity_id, "b": other.entity_id, "evidence": ev,
+                        "source": "rule", "applied": False, "folded": None})
+                    merged_pairs.append({
+                        "a": base.entity_id, "b": other.entity_id, "evidence": ev,
+                        "value": False, "source": "llm", "applied": False,
+                        "confidence": str(verdict.get("confidence") or "unstated")})
             elif _name_compatible(base, other):
+                rec = {"a": base.entity_id, "b": other.entity_id, "evidence": "",
+                       "source": "rule", "applied": True, "folded": other}
                 _merge_into(base, other, person_entities)
-                merged_pairs.append((base.entity_id, other.entity_id))
+                merged_pairs.append(rec)
             else:
                 # coref says same, names differ, no LLM to adjudicate: genuinely
                 # unresolved -- THIS is the one case worth a human's review.

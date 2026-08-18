@@ -74,6 +74,17 @@ def build_location_edges(
             rec = gazetteer.get(key)
             if rec:
                 e.subtype = rec["type"].upper()
+                # Expose the gazetteer's parent as the RULE value for the
+                # `location_parent` field, so the second line CHECKS it instead of
+                # only filling gaps. Recorded even when the parent isn't a mention in
+                # this transcript (so no edge is built): an LLM parent that
+                # contradicts a known gazetteer parent is then a conflict rather than
+                # an unchallenged fill -- which is what let "Columbus -> West
+                # Virginia" and "Charleston -> West Virginia" through.
+                if rec["parent"]:
+                    e.attributes.setdefault(
+                        "location_parent", gazetteer[rec["parent"]]["name"]
+                        if rec["parent"] in gazetteer else rec["parent"])
     # now we have a lookup table that resolves the key to an alias in the
     # gazetteer (if it exists), else just uses the default key
 
@@ -93,6 +104,77 @@ def build_location_edges(
     return edges
 
 
+# Geographic granularity coarse enough that keeping it cannot single out a
+# household: a country, a state/province/district, or a region/county/parish.
+# Everything at CITY level or finer -- and every INSTITUTION, and every place the
+# gazetteer could not type -- is replaced. Deliberately keyed on the RAW type
+# rather than the canonical bucket in `checks/comparators.LOC_CANON`: that bucket
+# folds "island" and "metro" into "region", and an island or a metro area can be
+# small enough to identify one family.
+BROAD_LOCATION_TYPES = {
+    "country", "territory",
+    "state", "province", "district",
+    "region", "county", "parish",
+}
+
+
+# Names the gazetteer types BROAD but that, said aloud, just as often mean a
+# CITY-level place. The gazetteer is keyed on a bare lowercase name, so it answers
+# with whichever sense it happens to hold, and "keep it, the table says it is a
+# state" is then unfalsifiable: `checks/location.type_corroborated` confirms the type
+# against the same table that produced it, so the two agree by construction.
+#
+# Verified: interview_002's "Every light that ever came on in Charleston or in
+# Washington" means Washington D.C., and the row above types "washington" as a state,
+# so the name was KEPT -- the one place leak in the sample transcripts.
+#
+# Membership forces the safe direction (replace) rather than asserting a type, so the
+# cost of a name being here is over-redacting a genuine region reference, and the
+# benefit is that an ambiguous name can never be kept on a table collision. Keep it to
+# names where BOTH senses are common in ordinary speech.
+AMBIGUOUS_BROAD_NAMES = {
+    "washington",       # state / D.C.
+    "new york",         # state / city
+    "georgia",          # US state / country
+    "mexico",           # country / Mexico City, and Mexico, Missouri
+    "kansas",           # state / Kansas City
+    "panama",           # country / Panama City
+    "quebec",           # province / Quebec City
+    "luxembourg",       # country / city
+    "singapore", "monaco", "san marino",   # country == city
+}
+
+
+def infer_location_replace(entities: list[Entity]) -> None:
+    """RULE layer for LOCATION / INSTITUTION `replace`.
+
+    Nothing used to decide this at all: location entities reached surrogate
+    generation with no `replace` key, so a consumer keying off `replace` skipped
+    every place name while redacting every person -- and a hamlet plus an age plus
+    an occupation is exactly how an interviewee gets re-identified.
+
+    The rule is the gazetteer's own granularity. A place typed country / state /
+    region is kept; a city or anything finer is replaced; an INSTITUTION (a named
+    organisation, church, school, employer) is always replaced; and a place the
+    gazetteer could not type at all is replaced, because an unknown place is far
+    more likely to be a small local one than a country.
+
+    Over-redaction is the safe error here, so the default is always `True`. The
+    LLM's own identifying-ness judgment second-lines this in
+    `graph.second_line` under `replace_location`, with `conflict_policy=
+    safe_direction` -- so a disagreement always resolves toward more redaction --
+    and the checkers in `graph/checks/location.py` gate the KEEP direction.
+    """
+    for e in entities:
+        if e.category not in ("LOCATION", "INSTITUTION"):
+            continue
+        if e.category == "INSTITUTION":
+            e.attributes.setdefault("replace", True)
+            continue
+        raw = (e.subtype or "").strip().lower()
+        e.attributes.setdefault("replace", raw not in BROAD_LOCATION_TYPES)
+
+
 # ----------------------------- Dates -----------------------------
 
 # Public events that can NEVER be shifted. Matched as substrings of the mention
@@ -105,6 +187,22 @@ ANCHOR_EVENTS = {
     "hurricane harvey": "2017-08-25",
     "deepwater horizon": "2010-04-20", "bp oil spill": "2010-04-20",
     "fukushima": "2011-03-11",
+    # Named disasters that recur in US oral history and that the table's own
+    # "anchor phrase not in ANCHOR_EVENTS table - add it" flag was asking for.
+    # Without a row here BOTH layers went silent on interview_002's "Buffalo Creek
+    # flood" -- no rule value, and the LLM's date was not accepted either -- so the
+    # date-shifter got no constraint for a fixed public event.
+    "buffalo creek flood": "1972-02-26", "buffalo creek": "1972-02-26",
+    "matewan massacre": "1920-05-19",
+    "farmington mine disaster": "1968-11-20",
+    "sago mine": "2006-01-02",
+    "upper big branch": "2010-04-05",
+    "hurricane rita": "2005-09-24",
+    "hurricane ike": "2008-09-13",
+    "hurricane camille": "1969-08-17",
+    "mount st. helens": "1980-05-18", "mount saint helens": "1980-05-18",
+    "dust bowl": "1935-04-14",
+    "saigon fell": "1975-04-30", "fall of saigon": "1975-04-30",
     # political
     "obama got elected": "2008-11-04", "obama was elected": "2008-11-04",
     "obama's election": "2008-11-04", "obama inauguration": "2009-01-20",
@@ -140,6 +238,10 @@ _YEAR_RE = re.compile(r"\b(?:1[89]\d{2}|20\d{2})\b")
 # approximate mid-season dates
 _SEASONS = {"spring": "03-20", "summer": "06-21", "fall": "09-22",
             "autumn": "09-22", "winter": "12-21"}
+# a written month name, used to tell "nineteen sixty" (year only) from a spoken year
+# that also pins a month
+_MONTH_NAME_RE = re.compile(
+    r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)", re.I)
 
 # "two years ago", "a couple of months ago", "several weeks ago", "3 days ago"
 _REL_AGO = re.compile(
@@ -194,6 +296,91 @@ Resolve relative expressions (e.g. "2 weeks ago", "last spring", etc)
 relative to the interview date (metadata). These resolutions are marked
 `approximate=True` since they represent estimates.
 """
+# A SPOKEN year, which carries no digits: "nineteen and sixty", "nineteen
+# sixty-five", "eighteen ninety". dateutil cannot read these, so the rule layer
+# produced nothing for them and the field fell to the LLM -- which the checkers then
+# had to gate with no rule value to compare against. `checks/comparators` already
+# recognized the shape for GRANULARITY purposes; this makes the rule parser able to
+# actually resolve it.
+_SPOKEN_UNITS = {
+    "hundred": 0, "oh": 0, "o": 0, "zero": 0, "naught": 0, "aught": 0,
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+    "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16,
+    "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
+    "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70,
+    "eighty": 80, "ninety": 90,
+}
+_SPOKEN_CENTURY = {"eighteen": 1800, "nineteen": 1900, "twenty": 2000}
+_SPOKEN_YEAR_RE = re.compile(
+    r"\b(eighteen|nineteen|twenty)\b[\s\-]+(?:and[\s\-]+)?"
+    r"((?:" + "|".join(_SPOKEN_UNITS) + r")(?:[\s\-]+(?:"
+    + "|".join(_SPOKEN_UNITS) + r"))?)\b", re.I)
+
+
+def parse_spoken_year(raw: str) -> int | None:
+    """The 4-digit year a spelled-out year expression denotes, else None.
+    "nineteen and sixty" -> 1960, "nineteen sixty-five" -> 1965,
+    "nineteen hundred" -> 1900."""
+    m = _SPOKEN_YEAR_RE.search(raw or "")
+    if not m:
+        return None
+    base = _SPOKEN_CENTURY[m.group(1).lower()]
+    offset = 0
+    for tok in re.split(r"[\s\-]+", m.group(2).lower()):
+        if tok in _SPOKEN_UNITS:
+            offset += _SPOKEN_UNITS[tok]
+    if not (0 <= offset <= 99):
+        return None
+    return base + offset
+
+
+def parse_absolute_date(raw: str) -> tuple[str | None, bool]:
+    """THE rule parser for an absolute date expression, as a pure function.
+
+    Returns `(iso_or_None, has_explicit_year)`. Split out of
+    `resolve_date_entity` for the same reason as `parse_age_value`: the
+    deterministic checkers in `graph/checks/` re-run the rule's own parser rather
+    than reimplementing it, so the two layers cannot drift apart.
+
+    Handles three things dateutil alone does not:
+
+      * a SEASON with a year ("spring of 1975", "the winter of 1972"). `_SEASONS`
+        existed but was consulted only on the DATE_RELATIVE branch, so an absolute
+        season fell through to dateutil's fixed default and resolved to JANUARY 1 --
+        78 days out. Worse, `resolved_value` is RULE_WINS, so the model's correct
+        "1975-04" lost the conflict to the rule's wrong "1975-01-01". Verified: the
+        one date failure in interview_001.
+      * a SPOKEN year with no digits (`parse_spoken_year`).
+      * a two-digit year, which dateutil silently pivots into the FUTURE ("winter of
+        '72" -> 2072). Reported as year-less so the caller flags it; the ISO value is
+        still returned because `checks/dates.iso_valid` refutes an implausible year
+        and `verify_always` then erases it.
+    """
+    text = (raw or "").strip()
+    has_year = bool(_YEAR_RE.search(text))
+
+    spoken = None if has_year else parse_spoken_year(text)
+    year = int(_YEAR_RE.search(text).group(0)) if has_year else spoken
+    if spoken is not None:
+        has_year = True
+
+    if year is not None:
+        m = re.search(r"\b(spring|summer|fall|autumn|winter)\b", text, re.I)
+        if m:
+            return f"{year:04d}-{_SEASONS[m.group(1).lower()]}", True
+        # a spoken year with nothing finer than the year itself
+        if spoken is not None and not _MONTH_NAME_RE.search(text):
+            return f"{year:04d}-01-01", True
+
+    try:
+        iso = dateparser.parse(text, fuzzy=True,
+                               default=_ABS_DATE_DEFAULT).date().isoformat()
+    except (ValueError, OverflowError, TypeError):
+        return None, has_year
+    return iso, has_year
+
+
 def resolve_date_entity(entity: Entity, interview_date) -> None:
     text = entity.mentions[0].text.lower()
     attrs = entity.attributes
@@ -201,13 +388,11 @@ def resolve_date_entity(entity: Entity, interview_date) -> None:
 
     if entity.category == "DATE_ABSOLUTE" or entity.category == "DATE_OF_BIRTH":
         raw = entity.mentions[0].text
-        try:
-            attrs["resolved_value"] = dateparser.parse(
-                raw, fuzzy=True, default=_ABS_DATE_DEFAULT
-            ).date().isoformat()
-        except (ValueError, OverflowError):
+        iso, _has_year = parse_absolute_date(raw)
+        if iso is None:
             entity.flag_entity("absolute date failed to parse")
             return
+        attrs["resolved_value"] = iso
         # A missing day now defaults to the 1st (deterministic); but a missing
         # YEAR pulls from the default and is almost certainly wrong -- flag it.
         if not _YEAR_RE.search(raw):
@@ -227,6 +412,12 @@ def resolve_date_entity(entity: Entity, interview_date) -> None:
             if phrase in text or pna in text_na or pna in text:
                 attrs["resolved_value"] = iso
                 attrs["anchor_event"] = phrase
+                # A listed public event has ONE fixed calendar date, so this is the
+                # rule's answer for `approximate` too. Without it every anchor was a
+                # "neither layer produced a value" row -- the anchor classifier does
+                # not return an approximation flag -- which is a review flag on a
+                # field the table already settles.
+                attrs.setdefault("approximate", False)
                 return
         entity.flag_entity("anchor phrase not in ANCHOR_EVENTS table - add it")
         return
@@ -286,61 +477,69 @@ def resolve_date_entity(entity: Entity, interview_date) -> None:
         entity.flag_entity("relative date pattern not recognized")
 
 
-"""
-Used for AGE entities; we want a value to store in `entity.attributes`.
-The function first looks for a numeric age (e.g. "42 years old"). If no
-digits are present, it parses simple spelled-out ages (e.g. "ten",
-"twenty-three", "thirty seven"). On success, the integer is stored as:
-entity.attributes["value"]
-"""
-def resolve_age_entity(entity: Entity) -> None:
-    text = entity.mentions[0].text.lower()
+_AGE_ONES = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+             "seven": 7, "eight": 8, "nine": 9}
+_AGE_TEENS = {"ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+              "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+              "eighteen": 18, "nineteen": 19}
+_AGE_TENS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+             "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90}
+# Decade expressions: "in my twenties", "mid-thirties", "late forties".
+# These are approximate; we store a representative age within the decade.
+_AGE_DECADES = {"twenties": 20, "thirties": 30, "forties": 40, "fifties": 50,
+                "sixties": 60, "seventies": 70, "eighties": 80, "nineties": 90}
+
+
+def parse_age_value(text: str) -> tuple[int | None, bool]:
+    """THE rule parser for an age expression, as a pure function.
+
+    Returns `(value, approximate)`; `value` is None when the expression cannot be
+    parsed. Split out of `resolve_age_entity` so `graph/checks/` can re-run the
+    rule's own arithmetic as the deterministic check on an LLM `value` /
+    `approximate` proposal -- the same arrangement `checks/identifiers.py` uses
+    with `identifiers._normalize`. Keeping ONE parser means the rule layer and
+    the checker can never disagree about what the text says.
+    """
+    text = (text or "").lower()
     m = re.search(r"\d{1,3}", text)
     if m:
-        entity.attributes["value"] = int(m.group(0))
-        return
-    
-    # spelled-out ages: "twenty-three", "thirty-seven", "ten"
-    ones = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
-            "seven": 7, "eight": 8, "nine": 9}
-    teens = {"ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
-             "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
-             "eighteen": 18, "nineteen": 19}
-    tens = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
-            "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90}
+        return int(m.group(0)), False
 
-    # Decade expressions: "in my twenties", "mid-thirties", "late forties".
-    # These are approximate; we store a representative age within the decade.
-    _DECADES = {"twenties": 20, "thirties": 30, "forties": 40, "fifties": 50,
-                "sixties": 60, "seventies": 70, "eighties": 80, "nineties": 90}
     dec = re.search(r"(early|mid|middle|late)?[\s\-]*(" +
-                    "|".join(_DECADES) + r")\b", text)
+                    "|".join(_AGE_DECADES) + r")\b", text)
     if dec:
         bump = {"early": 2, "mid": 5, "middle": 5, "late": 8}.get(dec.group(1) or "", 5)
-        entity.attributes["value"] = _DECADES[dec.group(2)] + bump
-        entity.attributes["approximate"] = True
-        return
+        return _AGE_DECADES[dec.group(2)] + bump, True
 
     # "twenty-something", "thirty-something"
     som = re.search(r"(twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)"
                     r"[\s\-]*something", text)
     if som:
-        entity.attributes["value"] = tens[som.group(1)] + 5
-        entity.attributes["approximate"] = True
-        return
+        return _AGE_TENS[som.group(1)] + 5, True
 
     total, found = 0, False
     for tok in re.split(r"[\s\-]+", text):
-        if tok in teens:
-            total += teens[tok]; found = True
-        elif tok in tens:
-            total += tens[tok]; found = True
-        elif tok in ones:
-            total += ones[tok]; found = True
-    if found:
-        entity.attributes["value"] = total
-    else:
+        if tok in _AGE_TEENS:
+            total += _AGE_TEENS[tok]; found = True
+        elif tok in _AGE_TENS:
+            total += _AGE_TENS[tok]; found = True
+        elif tok in _AGE_ONES:
+            total += _AGE_ONES[tok]; found = True
+    return (total, False) if found else (None, False)
+
+
+"""
+Used for AGE entities; we want a value to store in `entity.attributes`.
+Thin wrapper over `parse_age_value` so the parser stays reusable by the checkers.
+"""
+def resolve_age_entity(entity: Entity) -> None:
+    value, approximate = parse_age_value(entity.mentions[0].text)
+    if value is None:
         entity.flag_entity("could not parse age value")
+        return
+    entity.attributes["value"] = value
+    if approximate:
+        entity.attributes["approximate"] = True
 
 
 """

@@ -1,45 +1,75 @@
 """
-Optional local-LLM layer for the de-identification pipeline. Sits on top of the
-deterministic ruleset in `graph/` and adds a second, conservative judgment.
+Optional local-LLM layer. It PROPOSES; `graph.second_line` ARBITRATES.
 
-Design invariant -- the LLM is a SECOND LINE OF DEFENSE, never authoritative:
-every rule table/parser can miss, so wherever a rule leaves a value unset,
-unresolved, ambiguous, or malformed, one of these passes steps in with a FLAGGED
-SUGGESTION (`suggested_*` / `candidate_*` + a review flag). The LLM never
-overwrites a rule-set value and never lowers redaction. Everything detected in a
-transcript now has such a fallback:
+Every rule table and parser in `graph/` can miss, so this layer asks the model the
+same questions the tables answer -- for every entity, whether or not the rule
+filled the field -- and returns plain dicts:
 
-  clustering (ambiguous names) .. adjudicate_same_person   (pipeline._adjudicate_ambiguous)
-  relations, known vocabulary ... extract_pass -> relation_verify (apply/suggest)
-  relations, unknown vocabulary . relation_verify           (suggest, tagged raw word)
-  gender / role / ethnicity ..... extract_pass               (suggested_gender / _role / _ethnicity)
-  public figure & redaction ..... openworld_pass             (co-sign keep / candidate / raise)
-  FAMILY / PROFESSIONAL subtype . openworld_pass             (suggested_subtype)
-  location type / hierarchy ..... openworld_pass             (suggested_type / _parent)
-  anchor / absolute / relative dates .. openworld_pass       (check + suggested_value)
-  age value ..................... openworld_pass             (check + suggested_value)
-  identifier owner / identifying  identifier_judge_pass      (owner / identifying)
-  identifier type (malformed) ... identifier_judge_pass      (suggested_kind)
+    {entity_id: {field: {"value": ..., "confidence": ..., <extras>}}}
+
+`graph.second_line.resolve_all` then decides, per field, with one of five
+outcomes: a filled rule value is CHECKED (confirm / conflict), an empty one is
+FILLED only if every deterministic checker in `graph/checks/` passes, and a field
+neither layer could answer is an explicit REJECT rather than silence. Provenance
+for each decision lands on `Entity.provenance`. Plain dicts keep the one-way
+dependency (`graph` -> `llm_layer`) intact.
+
+EVERY field is routed through the unified second line, and every field has a proposer.
+Two holes used to hide in this list rather than in the code:
+
+  * `approximate` was NOT proposed for DATE_ANCHOR (the anchor classifier returned no
+    such key), so for any anchor phrase outside `ANCHOR_EVENTS` neither layer answered;
+  * the windowed pass SKIPPED anyone the rules had typed PUBLIC_FIGURE, which removed
+    the second line from `gender` / `given_name` / `surname` / `role` / `ethnicity` for
+    exactly the entity that most needs it -- a private namesake of a celebrity, since
+    the pass runs before `replace` is arbitrated.
+
+Each row is `field .... proposer <- the rule table it second-lines`:
+
+  interviewee identity .......... propose_interviewee <- interviewee.rule_candidate
+  gender (named persons) ........ extract_pass      <- kinship.KINSHIP_GENDER
+  gender (interviewee) .......... extract_pass      <- attributes.infer_interviewee_gender
+  given_name / surname .......... extract_pass      <- attributes token split
+  role .......................... extract_pass      <- attributes.infer_person_role
+  ethnicity ..................... extract_pass      <- attributes.infer_ethnicity
+  same_person (alias/nickname) .. extract_pass      <- aliases.apply_alias_cues + coref
+  replace / PUBLIC_FIGURE ....... openworld_propose <- PUBLIC_FIGURES + _personal_signal
+  FAMILY / PROFESSIONAL subtype . openworld_propose <- kin edges / PROFESSIONAL_CONTEXT
+  location type ................. openworld_propose <- gazetteer type
+  location parent (-> LOCATED_IN) openworld_propose <- gazetteer parent
+  location replace .............. openworld_propose <- location_dates.infer_location_replace
+  date resolved_value ........... openworld_propose <- dateutil / rel-date regex /
+                                                       season + spoken-year parsing /
+                                                       ANCHOR_EVENTS
+  shiftable (all date types) .... openworld_propose <- the rule's per-category default
+  approximate (incl. ANCHORS) ... openworld_propose <- the rule's own marker
+  age value ..................... openworld_propose <- word-number / decade maps
+  age <-> date pairing .......... openworld_propose <- location_dates.age_date_constraints
+  identifier owner .............. identifier_judge_pass <- pipeline._link_interviewee_pii
+  identifier kind + normalization identifier_judge_pass <- identifiers._normalize
+  occupation identifying ........ identifier_judge_pass <- identifiers.COMMON_OCCUPATIONS
+
+Merging is the one decision the LLM still cannot make on its own: a `same_person`
+claim that clears every checker becomes a `suggested_merge_with` review flag, never
+an automatic merge, because changing who the graph thinks exists is a human's call.
 
 Public API:
   default_client / LLMClient   -- shared Ollama client + persistent cache (llm.py)
-  adjudicate_same_person       -- use #1: merge adjudication  (merge_adjudicate.py)
-                                   also the clustering-ambiguity second line
-  openworld_pass               -- use #2: open-world classifier (openworld.py)
-                                   (public figure / subtype / location / date / age)
-  extract_pass                 -- use #3: windowed extraction    (extract.py)
-                                   (attributes + relations + aliases)
-  identifier_judge_pass        -- use #4: identifier judgment (identifier_judge.py)
-                                   (owner / occupation identifying-ness / type)
+  adjudicate_same_person      -- merge adjudication (merge_adjudicate.py)
+  openworld_propose           -- per-entity proposer (openworld.py)
+  extract_pass                -- windowed proposer + verified relations (extract.py)
+  identifier_judge_pass       -- windowed identifier proposer (identifier_judge.py)
 """
 
 from .llm import LLMClient, default_client
 from .merge_adjudicate import adjudicate_same_person
-from .openworld import openworld_pass
+from .openworld import openworld_propose
 from .extract import extract_pass
 from .identifier_judge import identifier_judge_pass
+from .interviewee_id import propose_interviewee
 
 __all__ = [
     "LLMClient", "default_client", "adjudicate_same_person",
-    "openworld_pass", "extract_pass", "identifier_judge_pass",
+    "openworld_propose", "extract_pass", "identifier_judge_pass",
+    "propose_interviewee",
 ]

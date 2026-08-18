@@ -1,37 +1,40 @@
 """
-Deterministic verifier for LLM-proposed relations (the "verify" half of
-propose-verify). `llm_layer/extract.py` is a high-RECALL proposer; this module is
-the high-PRECISION gate every proposal must clear before it can become a graph
-edge. It uses only deterministic, rule-style locality checks -- no world
-knowledge -- so it can cheaply refute the LLM's mistakes without inheriting its
-hallucinations.
+Deterministic verifier for proposed relations -- the CHECKER behind the `relation`
+field in `graph/second_line.py`.
+
+This module used to live in `llm_layer/` and was invoked by the proposer on itself,
+which meant relations were the one field that never passed through the single
+arbitration point: they produced no Resolution, carried no provenance, and did not
+appear in the ledger. It is deterministic and rule-shaped, so it belongs here with
+the other checkers; `llm_layer/extract.py` now returns RAW relation proposals and
+this decides their fate.
 
 For each candidate (source, target, rel, evidence) `verify_relation` returns:
-  apply   -- strongly supported locally; emit an edge. Direction is canonicalized
-             (the interviewee is forced to the SOURCE) and the evidence is
-             re-grounded to a single nearby sentence (kills run-on quotes).
+  apply   -- strongly supported locally; the relation becomes an edge. Direction is
+             canonicalized (the interviewee is forced to the SOURCE) and the
+             evidence is re-grounded to a single nearby sentence (kills run-on
+             quotes).
   suggest -- plausible but not locally provable (e.g. needs coreference, like
-             "My mom ... Her name was Gloria"); surfaced for human review, NO edge.
+             "My mom ... Her name was Gloria"); surfaced for review, NO edge.
   reject  -- refuted or out of scope; dropped.
 
 Refutations / drops:
   * either end is a public figure                  -> drops celebrity edges
-  * a rel word outside the kin/social vocabulary   -> NOT an edge, but (second-line
-    policy) surfaced as a review SUGGESTION tagged with the raw word, so an
-    out-of-table relation the rules can't score still reaches a human
+  * a rel word outside the kin/social vocabulary   -> NOT an edge, but surfaced as a
+    review SUGGESTION tagged with the raw word, so an out-of-table relation the
+    rules can't score still reaches a human
   * a named/third-person possessor of the kin word -> drops "Carla's mom" read as
     the interviewee's mother, "Her husband, Ronnie" read as the interviewee's
   * whole-word grounding                           -> "ruth" no longer matches "ruthie"
-
-Imports nothing from `graph`; operates on the Entity objects it is handed, so the
-one-way dependency (graph -> llm_layer) is preserved.
 """
+
 
 from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .extract import _sentences, _KIN_WORDS
+from ..sentences import sentence_spans as _sentences
+from .relwords import KIN_WORDS as _KIN_WORDS
 
 
 # Social ties we keep as edges (single-token, matched as whole words). Anything
@@ -51,7 +54,7 @@ _KIN_GROUPS = [
     {"mother", "mom", "mommy", "mum", "mummy", "mama", "mamma", "momma", "ma"},
     {"father", "dad", "daddy", "papa", "poppa", "pop", "pops", "pa"},
     {"grandmother", "grandma", "grandmom", "granny", "nana", "nanna", "gramma",
-     "grammy", "meemaw"},
+     "grammy", "meemaw", "mamaw", "mawmaw", "memaw", "mammaw", "mimi"},
     {"grandfather", "grandpa", "granddad", "grandad", "grandpop", "gramps",
      "papaw", "pawpaw", "pappy"},
     {"sister", "sis"},

@@ -180,7 +180,6 @@ _HANDLED_ATTR_KEYS = {
     "given_name", "surname", "gender", "gender_confirmed", "replace", "role",
     "subtype", "owner", "identifying", "suggested_gender", "gender_confirmed",
     "suggested_role", "suggested_subtype", "suggested_subtype_confidence",
-    "candidate_public_figure", "candidate_public_figure_confidence",
     "public_figure_cosign", "suggested_merge_with", "suggested_ethnicity",
     "ethnicity_basis", "ethnicity_evidence", "ethnicity_confidence",
     "suggested_relation", "merge_evidence", "replace",
@@ -227,7 +226,10 @@ def _owned_chip(e):
     if e.category == "AGE":
         v = a.get("value", a.get("suggested_value"))
         txt = f"age {v}" if v is not None else f"age &ldquo;{escape(e.mentions[0].text)}&rdquo;"
-        if a.get("approximate") or a.get("suggested_approximate"):
+        # `suggested_approximate` was read here and NEVER WRITTEN: `_legacy_mirror`
+        # has no branch for `approximate`, so the alternative was dead. The resolved
+        # attribute is the value the second line actually settled on.
+        if a.get("approximate"):
             txt += " (approx)"
         return _chip(txt, "age")
     if e.category == "DATE_OF_BIRTH":
@@ -291,10 +293,13 @@ def _person_card(e, case, owned, rel_map, is_iv=False) -> str:
         conf = a.get("suggested_subtype_confidence")
         sugg.append(f"maybe {escape(str(a['suggested_subtype']).lower())}"
                     + (f" ({escape(str(conf))} conf)" if conf else ""))
-    if a.get("candidate_public_figure"):
-        conf = a.get("candidate_public_figure_confidence")
-        sugg.append(f"maybe public figure ({escape(str(a['candidate_public_figure']))}"
-                    + (f", {escape(str(conf))} conf" if conf else "") + ")")
+    # `candidate_public_figure` used to be read here. Nothing writes it: the
+    # public-figure decision became the `replace` field's `safe_direction` policy plus
+    # its two checkers, so what a reviewer needs is the RESOLUTION, not a stale
+    # advisory key. Read it from provenance instead, where the answer actually lives.
+    _rep = (getattr(e, "provenance", None) or {}).get("replace")
+    if _rep is not None and _rep.action == "conflict":
+        sugg.append(f"redaction disputed: {escape(_rep.reason[:90])}")
     if a.get("suggested_merge_with"):
         sugg.append(f"maybe same person as {escape(str(a['suggested_merge_with']))}")
     if a.get("suggested_relation"):
@@ -470,6 +475,26 @@ def _graph_svg(case) -> str:
     return "".join(parts)
 
 
+def _owner_note(e) -> str:
+    """`owner` and its blocking status, for an AGE / DATE entity.
+
+    These entities were rendered as a bare "text -> value" pill, so NONE of their
+    ownership decisions appeared anywhere on the page -- including the blocking ones,
+    which are precisely the rows a human has to settle before surrogates are minted.
+    An age nobody can attribute is not a resolved age.
+    """
+    res = (getattr(e, "provenance", None) or {}).get("owner")
+    owner = e.attributes.get("owner")
+    if owner:
+        cls = "own-iv" if owner == "interviewee" else "own-other"
+        return f"<i class='own {cls}'>{escape(str(owner))}</i>"
+    if res is not None and getattr(res, "blocking", False):
+        return "<i class='own own-block'>owner unresolved &mdash; BLOCKING</i>"
+    if res is not None and res.action in ("reject", "conflict"):
+        return "<i class='own own-none'>owner unresolved</i>"
+    return ""
+
+
 def _places_times(case) -> str:
     ents = {e.entity_id: e for e in case["entities"]}
     loc = [(x.source, x.target) for x in case["edges"] if _relname(x) == "LOCATED_IN"]
@@ -481,17 +506,61 @@ def _places_times(case) -> str:
                     f"<span class='arrow'>in &rarr;</span>"
                     f"<span class='pill loc'>{escape(ct)}</span></div>")
     loc_html = (f"<div class='sub-h'>Location hierarchy</div>{''.join(rows)}") if rows else ""
+
+    # PLACE REDACTION. `replace_location` decides whether a place name survives into
+    # the surrogate transcript, and nothing on this page showed it: a reviewer saw
+    # every person redacted and could not tell that "Red Jacket" was too, or that
+    # "Washington" was kept. A hamlet plus an age plus an occupation re-identifies a
+    # household, so this belongs beside the people, not nowhere.
+    place_rows = []
+    for e in case["entities"]:
+        if e.category not in ("LOCATION", "INSTITUTION"):
+            continue
+        keep = e.attributes.get("replace", True) is False
+        res = (getattr(e, "provenance", None) or {}).get("replace_location")
+        why = ""
+        if res is not None:
+            n = len(res.checks_passed)
+            why = f"{res.action} &middot; {escape(res.source or 'unresolved')}"
+            if n:
+                why += f" &middot; {n} check(s)"
+            elif keep:
+                # Only a KEEP needs proving, so only a KEEP is alarming when nothing
+                # checked it. Saying "unverified" against `replace=True` would flag the
+                # safe direction, where the keep-gates correctly do not apply.
+                why += " &middot; NOTHING VERIFIED THIS KEEP"
+        place_rows.append(
+            f"<div class='locrow'><span class='pill loc'>{escape(_pname(e))}</span>"
+            f"<span class='ptype'>{escape(str(e.subtype or 'untyped').lower())}</span>"
+            f"<span class='pill {'keepp' if keep else 'repl'}'>"
+            f"{'kept' if keep else 'replace'}</span>"
+            f"<span class='pwhy'>{why}</span></div>")
+    place_html = (f"<div class='sub-h'>Place names &mdash; redaction decision</div>"
+                  f"{''.join(place_rows)}") if place_rows else ""
+
     chips = []
     for e in case["entities"]:
         if e.category.startswith("DATE"):
             v = e.attributes.get("resolved_value") or "unresolved"
-            chips.append(f"<span class='pill date'>{escape(e.mentions[0].text)} &rarr; {escape(str(v))}</span>")
+            # `shiftable` and `approximate` are what the date-shifter reads. Both were
+            # arbitrated and neither was ever displayed, so a date pinned as
+            # non-shiftable looked identical to one that can move.
+            marks = []
+            if e.attributes.get("shiftable") is False:
+                marks.append("fixed")
+            if e.attributes.get("approximate"):
+                marks.append("approx")
+            tail = f" <i class='dmark'>{' &middot; '.join(marks)}</i>" if marks else ""
+            chips.append(f"<span class='pill date'>{escape(e.mentions[0].text)} &rarr; "
+                         f"{escape(str(v))}{tail}{_owner_note(e)}</span>")
         elif e.category == "AGE":
+            v = e.attributes.get("value")
+            tail = " <i class='dmark'>approx</i>" if e.attributes.get("approximate") else ""
             chips.append(f"<span class='pill age'>{escape(e.mentions[0].text)} &rarr; "
-                         f"{escape(str(e.attributes.get('value')))}</span>")
+                         f"{escape(str(v))}{tail}{_owner_note(e)}</span>")
     dt_html = (f"<div class='sub-h'>Dates &amp; ages resolved</div><div class='pills'>{''.join(chips)}</div>"
                if chips else "")
-    return loc_html + dt_html
+    return loc_html + place_html + dt_html
 
 
 _GRAPH_LEGEND = (
@@ -627,5 +696,14 @@ mark{padding:1px 5px;border-radius:4px;font-weight:500;}
 .pills{display:flex;flex-wrap:wrap;gap:7px;}
 .pill{font-size:12px;padding:3px 10px;border-radius:20px;}
 .pill.loc{background:#EAF2E0;color:#315915;}.pill.date{background:#F8EFDD;color:#6A4310;}.pill.age{background:#EFEDFA;color:#413593;}
+.pill.repl{background:#FBECEA;color:#7C2222;}.pill.keepp{background:#EAF3EC;color:#2F6B3B;}
+.ptype{font-size:11px;color:var(--faint);min-width:82px;}
+.pwhy{font-size:11px;color:var(--muted);}
+.dmark{font-style:normal;font-size:10.5px;opacity:0.75;margin-left:4px;}
+.own{font-style:normal;font-size:10.5px;margin-left:6px;padding:1px 6px;border-radius:20px;}
+.own-iv{background:#2C4A6E;color:#fff;}
+.own-other{background:#fff;color:var(--muted);border:1px solid var(--line);}
+.own-none{background:#fff;color:#6A4310;border:1px solid #C99A4A;}
+.own-block{background:#7C2222;color:#fff;}
 .foot{font-size:12.5px;color:var(--muted);border-top:1px solid var(--line);padding-top:16px;margin-top:24px;}
 """

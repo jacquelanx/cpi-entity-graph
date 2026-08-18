@@ -31,6 +31,14 @@ KINSHIP_GENDER = {
     "aunt": "F", "auntie": "F", "aunty": "F",
     "grandmother": "F", "grandma": "F", "grandmom": "F", "granny": "F",
     "nana": "F", "nanna": "F", "gramma": "F", "grammy": "F", "meemaw": "F",
+    # The Appalachian/Southern feminine grandparent terms. `mamaw` was absent
+    # while its masculine counterpart `papaw` was present in every table, and this
+    # is the table that builds the `KIN` regex -- so "my Mamaw Opal" produced no
+    # RELATED_TO edge, no FAMILY subtype and no rule gender, while "my Papaw
+    # Clarence" produced all three. That asymmetry was the single missing relation
+    # in interview_002 (recall 6/7). `checks/names._EXTRA_KIN` already listed these
+    # words, which meant the CHECKER knew a vocabulary the rules did not.
+    "mamaw": "F", "mawmaw": "F", "memaw": "F", "mammaw": "F", "mimi": "F",
     "sister": "F", "sis": "F",
     "wife": "F", "daughter": "F", "niece": "F", "granddaughter": "F",
     "stepmother": "F", "stepmom": "F", "stepsister": "F", "stepdaughter": "F",
@@ -208,7 +216,8 @@ def extract_kinship(
     # case where the kin word is actually the SUBJECT of the next clause
     # ("Lewis, my Papaw would say ...", which is NOT an appositive). Anything that
     # doesn't clear this bar produces NO rule edge and is left to the LLM relation
-    # second line (extract_pass -> relation_verify), which reads the full context.
+    # second line (extract_pass proposes, graph/checks/relations.py verifies),
+    # which reads the full context.
     for m in re.finditer(
         rf"({_NAME}),\s+(?i:(?:who\s+(?:is|was)\s+|who's\s+)?({_POSS}|{_PRON})\s+{_MOD}({KIN}))"
         rf"\b(?=\s*(?:[,.;:!?)\]\"'’”]|and\b|who\b|whom\b|$))",

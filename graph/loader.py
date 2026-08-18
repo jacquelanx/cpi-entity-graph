@@ -71,28 +71,30 @@ def load_detections(path: str | Path, transcript: str) -> list[dict]:
 """
 Where spans overlap, keep the longer one (ties: higher score). This is because a
 longer span carries more information than a shorter one so no info is lost.
-Returns a list of accepted detections. 
+Returns a list of accepted detections.
+
+Compared against EVERY kept span it overlaps, not just the last one. Testing
+`kept[-1]` alone leaks the middle of a chain: given A=[0,10), B=[5,7), C=[6,12),
+B loses to A and is replaced by... nothing (A stays), then C is compared only to A,
+overlaps it, is longer, and REPLACES A -- so the 10-char span A is silently dropped in
+favour of C while B's rejection stands. Any three spans where the third reaches past
+the first show it. A detector that emits nested PERSON/NICKNAME spans (which this
+pipeline's own upstream stage does) produces exactly that shape.
 """
 def resolve_overlaps(detections: list[dict]) -> list[dict]:
-    # sort by: start asc, then length desc, then score desc.
-    ordered = sorted(
-        detections,
-        key=lambda d: (d["start"], -(d["end"] - d["start"]), -d.get("score", 0.0)),
-    )
+    def rank(d):
+        return (d["end"] - d["start"], d.get("score", 0.0))
+
+    # Longest (then highest-scoring) first, so a span is only ever rejected by one that
+    # already beat it -- which makes a single pass sufficient and the result independent
+    # of input order.
+    ordered = sorted(detections, key=lambda d: (-rank(d)[0], -rank(d)[1], d["start"]))
     kept: list[dict] = []
-    for d in ordered:                                  # d is a detection dictionary
-        if kept and d["start"] < kept[-1]["end"]:      # overlaps previous winner
-            prev = kept[-1]
-            prev_len = prev["end"] - prev["start"]
-            cur_len = d["end"] - d["start"]
-            if cur_len > prev_len or (
-                cur_len == prev_len and d.get("score", 0) > prev.get("score", 0)
-            ):
-                kept[-1] = d                            # current one wins
-            # else: drop current, previous stays
-        else:
-            kept.append(d)
-    return kept
+    for d in ordered:
+        if any(d["start"] < k["end"] and k["start"] < d["end"] for k in kept):
+            continue                                   # a better span already covers it
+        kept.append(d)
+    return sorted(kept, key=lambda d: d["start"])
 
 
 """

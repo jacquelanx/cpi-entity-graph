@@ -31,6 +31,12 @@ KINSHIP_AND_TITLES = {
     "dad", "daddy", "papa", "poppa", "pop", "pops", "pa",
     "grandma", "grandpa", "grandmother", "grandfather", "granny", "nana",
     "grandmom", "grandad", "granddad", "gramps", "cousin", "sis", "bro",
+    # Dialect grandparent terms. Absent here, `normalize("Papaw Clarence")` kept
+    # "papaw" as a name token, so the form did not exact-match a bare "Clarence"
+    # and the token split handed `given_name="Papaw"` to the surrogate generator.
+    # `checks/names._EXTRA_KIN` caught the second symptom; nothing caught the first.
+    "mamaw", "papaw", "meemaw", "pawpaw", "memaw", "mawmaw", "mammaw", "pappy",
+    "gramma", "grammy", "mimi",
     "husband", "wife", "son", "daughter", "niece", "nephew", "grandson",
     "granddaughter", "twin", "partner", "spouse", "sibling", "parent",
     "child", "kid", "boyfriend", "girlfriend", "fiance", "fiancee",
@@ -95,6 +101,63 @@ def normalize(text: str) -> tuple[str, ...]:
     return tuple(tokens)
 
 
+# Religious/professional forms of address that are NOT also kinship terms. A single
+# name token behind one of these is a SURNAME. Kept separate from
+# `HONORIFIC_TITLES` because that set drives clustering (`_honorific`), and widening
+# it there would change which bare names are held apart as possible collisions.
+_TITLE_ONLY = {
+    "rev", "reverend", "pastor", "deacon", "elder", "bishop", "monsignor",
+    "rabbi", "imam", "chaplain", "fr", "pr",
+}
+# Words that are BOTH a kinship term and a form of religious address. "Father
+# Nguyen" is a priest's surname; "my father, Earl" is a given name. Nothing in a bare
+# surface form distinguishes them, and English religious usage genuinely goes both
+# ways -- "Brother Estep" is a surname, "Sister Agnes" is a given name -- so the rule
+# ABSTAINS on the single-token case rather than guessing. Both name-part policies are
+# REQUIRED_OR_ABSTAIN, so an abstention is safe: the LLM proposes and
+# `checks/names.py` gates the answer.
+_TITLE_OR_KIN = {"father", "mother", "brother", "sister", "padre"}
+
+
+def split_name_parts(text: str) -> tuple[str | None, str | None]:
+    """THE rule split of one surface form into (given_name, surname).
+
+    Shared by `attributes.infer_person_attributes` and
+    `interviewee._name_parts`, which each carried their own copy of it.
+
+    A SINGLE remaining token is slotted by WHAT PRECEDED IT, which is the fix for
+    the mis-slotting `checks/names.py` could only report after the fact:
+
+      * honorific + one token  -> that token is a SURNAME. "Father Nguyen",
+        "Mr. Landry", "Dr. Combs", "Ms. Boudreaux", "Brother Estep" all name the
+        family name; slotting it as a given name meant the surrogate generator
+        minted a fake FIRST name to stand in for a surname. Verified: every
+        titled person in both sample transcripts came out with
+        `given_name = <their surname>`, and `_cross_field_consistency` could only
+        drop it afterwards -- and only when the LLM happened to fill `surname`
+        with the same token, which it did not do for "Father Nguyen".
+      * kinship word + one token -> that token is a GIVEN name ("Aunt Maria",
+        "Papaw Clarence"), which is the pre-existing behaviour.
+
+    Titles and kin words are stripped from the token list either way, so a form
+    with two or more real name tokens is unchanged: first is given, last is surname.
+    """
+    raw = [t for t in re.split(r"[\s,]+", text or "") if t]
+    kept = [t for t in raw if t.lower().strip(".") not in KINSHIP_AND_TITLES]
+    if len(kept) >= 2:
+        return kept[0], kept[-1]
+    if len(kept) == 1:
+        # was the stripped prefix an HONORIFIC (social distance -> surname), a
+        # kinship term (intimacy -> given name), or a word that is both?
+        dropped = [t.lower().strip(".") for t in raw if t not in kept]
+        if any(d in _TITLE_OR_KIN for d in dropped):
+            return None, None                 # genuinely ambiguous -- abstain
+        if any(d in HONORIFIC_TITLES or d in _TITLE_ONLY for d in dropped):
+            return None, kept[0]
+        return kept[0], None
+    return None, None
+
+
 """
 Implements an union find to later find/merge mention indices. Supports two
 functions: find (an element in a group0 and union (two groups).
@@ -117,34 +180,53 @@ class _UnionFind:
         self.parent[self.find(a)] = self.find(b)
 
 
-def _llm_says_distinct(persons, uf, bare_root, cand_root, transcript, llm) -> bool:
+def _llm_says_distinct(persons, uf, bare_root, cand_root, transcript, llm):
     """Ask the LLM adjudicator whether the bare-name group and the full-name group are
-    the SAME person. Return True ONLY on a confident 'different' verdict -> veto the
-    containment merge. Any other outcome (same / unsure / no verdict) allows the merge,
-    so rules-only behavior and clustering recall are preserved."""
+    the SAME person. Returns `(veto, verdict)`; `veto` is True ONLY on a confident
+    'different' verdict -> veto the containment merge. Any other outcome (same /
+    unsure / no verdict) allows the merge, so rules-only behavior and clustering
+    recall are preserved.
+
+    The verdict is returned as well as consumed, because this LLM decision changes
+    who the graph thinks exists and therefore owes the second line a record. It used
+    to be applied and forgotten: the veto wrote a free-text review flag and nothing
+    else, so the one decision class the arbitration layer could not see was an LLM
+    call inside the clustering rule. `merge_person_mentions` now emits a
+    `same_person` record for it (see the module docstring in
+    `graph/second_line.py`).
+    """
     from llm_layer import adjudicate_same_person
     bare = Entity(entity_id="_bare", category="PERSON",
                   mentions=[persons[j] for j in range(len(persons)) if uf.find(j) == bare_root])
     cand = Entity(entity_id="_cand", category="PERSON",
                   mentions=[persons[j] for j in range(len(persons)) if uf.find(j) == cand_root])
     v = adjudicate_same_person(llm, transcript, bare, cand)
-    return bool(v) and v.get("same") is False and v.get("confidence") == "high"
+    veto = bool(v) and v.get("same") is False and v.get("confidence") == "high"
+    return veto, (v or {})
 
 
 """
-Group PERSON/NICKNAME mentions into entities. Returns tuple in the form of
-(person_entities, ambiguous_mentions_left_unmerged).
+Group PERSON/NICKNAME mentions into entities. Returns a tuple of
+(person_entities, ambiguous_mentions_left_unmerged, veto_records).
 
 When `transcript` and `llm` are supplied and the LLM is up, a bare given name that
 would merge into a SINGLE full-name candidate is first adjudicated: the merge is
 vetoed only if the LLM is confident the two are different people (e.g. uncle "Bill"
 vs. foreman "Bill Ratliff"). With no LLM this is a no-op -- the rule merges as before.
+
+`veto_records` are `same_person` merge records for the pairs that adjudication kept
+apart: one `source="rule"` record with `applied=False` (the containment rule DID want
+to merge them) and one `source="llm"` record with `value=False` (the model
+disagreed). `graph.second_line._resolve_merges` arbitrates the pair, so the split
+gets a Resolution, provenance and a ledger row -- which an LLM decision this
+consequential should never have gone without.
 """
 def merge_person_mentions(transcript_id: str, mentions: list[Mention],
-                          transcript: str | None = None, llm=None) -> tuple[list[Entity], list[Mention]]:
+                          transcript: str | None = None, llm=None
+                          ) -> tuple[list[Entity], list[Mention], list[dict]]:
     persons = [m for m in mentions if m.entity_type in ("PERSON", "NICKNAME")]
     if not persons:
-        return [], []
+        return [], [], []
 
     norm = [normalize(m.text) for m in persons]  # eg. ("sarah", "hayes")
     canon = norm
@@ -183,6 +265,9 @@ def merge_person_mentions(transcript_id: str, mentions: list[Mention],
     llm_on = transcript is not None and llm is not None and llm.available()
     withheld_roots: set[int] = set()      # bare groups the LLM judged distinct
     veto_memo: dict[tuple, bool] = {}
+    # bare_root -> (candidate_root, verdict), for the records emitted below. Kept
+    # keyed by ROOT because entity ids do not exist until the groups are built.
+    vetoed_pairs: dict[int, tuple] = {}
     for i, key in enumerate(canon):
         if len(key) != 1:
             continue
@@ -197,8 +282,10 @@ def merge_person_mentions(transcript_id: str, mentions: list[Mention],
                 if mk not in veto_memo:
                     veto_memo[mk] = _llm_says_distinct(persons, uf, bare_root, cand,
                                                        transcript, llm)
-                if veto_memo[mk]:
+                veto, verdict = veto_memo[mk]
+                if veto:
                     withheld_roots.add(bare_root)     # keep the bare name separate
+                    vetoed_pairs[bare_root] = (cand, verdict)
                     continue
             uf.union(i, cand)
         elif len(candidates) > 1:
@@ -211,6 +298,7 @@ def merge_person_mentions(transcript_id: str, mentions: list[Mention],
         groups.setdefault(uf.find(i), []).append(i)
 
     entities = []
+    id_by_root: dict[int, str] = {}
     for n, (root, idxs) in enumerate(
         sorted(groups.items(), key=lambda kv: min(persons[i].start for i in kv[1]))
     ):
@@ -220,6 +308,7 @@ def merge_person_mentions(transcript_id: str, mentions: list[Mention],
             category="PERSON",
             mentions=sorted(group, key=lambda m: m.start),
         )
+        id_by_root[root] = e.entity_id
         if any(m in ambiguous for m in group):
             e.flag_entity("short name matches multiple long names")
         # this bare name also appears with a different honorific elsewhere
@@ -227,8 +316,21 @@ def merge_person_mentions(transcript_id: str, mentions: list[Mention],
         if any(canon[i] in collision_keys for i in idxs):
             e.flag_entity("bare given name also appears with a title elsewhere; "
                           "possible distinct people")
-        if root in withheld_roots:
-            e.flag_entity("containment merge withheld: LLM judged this a different "
-                          "person from a same-named fuller name; kept separate")
         entities.append(e)
-    return entities, ambiguous
+
+    # `same_person` records for the withheld pairs, so the split is arbitrated rather
+    # than merely annotated. The review flag itself is now written by
+    # `second_line._resolve_merges` alongside the Resolution, so it is not duplicated
+    # here.
+    veto_records: list[dict] = []
+    for bare_root, (cand_root, verdict) in vetoed_pairs.items():
+        a_id, b_id = id_by_root.get(bare_root), id_by_root.get(cand_root)
+        if a_id is None or b_id is None:
+            continue
+        ev = str((verdict or {}).get("evidence") or "")
+        conf = str((verdict or {}).get("confidence") or "unstated")
+        veto_records.append({"a": a_id, "b": b_id, "evidence": ev,
+                             "source": "rule", "applied": False, "folded": None})
+        veto_records.append({"a": a_id, "b": b_id, "evidence": ev, "value": False,
+                             "source": "llm", "confidence": conf, "applied": False})
+    return entities, ambiguous, veto_records

@@ -45,6 +45,9 @@ class Entity:
     attributes: dict = field(default_factory=dict)          # gender, surname, nationality, etc.
     needs_review: bool = False
     review_reason: str = ""
+    # field -> second_line.Resolution: how each field was decided (rule / confirmed
+    # / llm_checked), which deterministic checks ran, and whether it blocks.
+    provenance: dict = field(default_factory=dict)
 
     """All distinct ways this entity was written with longest first."""
     @property  # lets you access function like attribute
@@ -65,17 +68,31 @@ class Entity:
             "mentions": [m.to_dict() for m in sorted(self.mentions, key=lambda m: m.start)],
             "needs_review": self.needs_review,
             "review_reason": self.review_reason,
+            "provenance": {k: v.to_dict() if hasattr(v, "to_dict") else v
+                           for k, v in self.provenance.items()},
         }
 
 
 """
 Set enum for relationships between nodes.
+
+Mixes in `str` so a member compares equal to its own wire value. That is not
+cosmetic: `serialize.build_nx_graph` stores the ENUM on each networkx edge while
+`serialize.location_chain` filtered those edges with `d.get("relation") ==
+"LOCATED_IN"`. A plain Enum member never equals a string, so the filter matched
+nothing and `location_chain` always returned `[entity_id]` -- the LOCATED_IN walk
+the surrogate generator needs for consistent place substitution was dead code.
+`__str__` is pinned to `str.__str__` so `f"{rel}"` yields "LOCATED_IN" rather than
+"Relation.LOCATED_IN"; `.value` keeps working, so both existing call sites
+(`models.Edge.to_dict`, `render._rel`) are unaffected.
 """
-class Relation (Enum):
+class Relation (str, Enum):
     RELATED_TO = "RELATED_TO"       # person to person
     LOCATED_IN = "LOCATED_IN"       # place to place
     STATED_WITH = "STATED_WITH"     # age <-> the date it was co-stated with
     ATTRIBUTE_OF = "ATTRIBUTE_OF"   # identifier/age/dob -> the person it belongs to
+
+    __str__ = str.__str__
 
 
 """

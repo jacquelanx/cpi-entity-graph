@@ -1,72 +1,397 @@
 {
   "transcript_id": "interview_002",
   "interview_date": "2019-09-15",
+  "interviewee": {
+    "identity": null,
+    "gender": "M",
+    "ethnicity": "scotch-irish",
+    "dob": null,
+    "note": "male: 'My wife wanted to'; never named in the transcript"
+  },
   "people": [
-    {"canonical": "Earl", "forms": ["Earl"], "gender": "M", "replace": true, "note": "father"},
-    {"canonical": "Ruby", "forms": ["Ruby"], "gender": "F", "replace": true, "note": "mother"},
-    {"canonical": "Clarence", "forms": ["Clarence"], "gender": "M", "replace": true, "note": "grandfather; 'Papaw' IS in the kin table -> relation should hit"},
-    {"canonical": "Opal", "forms": ["Opal"], "gender": "F", "replace": true, "note": "grandmother; 'Mamaw' is NOT in the kin table -> expected relation miss"},
-    {"canonical": "Denver", "forms": ["Denver"], "gender": "M", "replace": true, "note": "brother; also a city name (Denver, CO) -> possible mistype if read as a place"},
-    {"canonical": "Loretta", "forms": ["Loretta", "Sissy"], "gender": "F", "replace": true, "note": "sister; alias 'called her Sissy' matches the cue rule -> merge should hit"},
-    {"canonical": "Bill", "forms": ["Bill"], "gender": "M", "replace": true, "note": "uncle; shares a given name with foreman Bill Ratliff -> containment over-merge trap"},
-    {"canonical": "Bill Ratliff", "forms": ["Bill Ratliff"], "gender": "M", "replace": true, "subtype": "PROFESSIONAL", "note": "mine foreman; 'Bill' folds into this full name -> expected over-merge with the uncle"},
-    {"canonical": "Brother Estep", "forms": ["Brother Estep"], "gender": "M", "replace": true, "subtype": "PROFESSIONAL", "note": "preacher; 'Brother' is a kin/title token that normalize() strips"},
-    {"canonical": "Dr. Combs", "forms": ["Dr. Combs"], "gender": "M", "replace": true, "subtype": "PROFESSIONAL", "note": "doctor"},
-    {"canonical": "Kennedy", "forms": ["Kennedy"], "gender": "M", "replace": false, "note": "public figure in list -> keep"},
-    {"canonical": "John L. Lewis", "forms": ["John L. Lewis"], "gender": "M", "replace": false, "note": "real public figure NOT in list -> expected over-redaction"},
-    {"canonical": "Reagan", "forms": ["Reagan"], "gender": "M", "replace": false, "note": "public figure in list -> keep"}
+    {
+      "canonical": "Earl",
+      "forms": [
+        "Earl"
+      ],
+      "gender": "M",
+      "replace": true,
+      "note": "father"
+    },
+    {
+      "canonical": "Ruby",
+      "forms": [
+        "Ruby"
+      ],
+      "gender": "F",
+      "replace": true,
+      "note": "mother"
+    },
+    {
+      "canonical": "Clarence",
+      "forms": [
+        "Clarence"
+      ],
+      "gender": "M",
+      "replace": true,
+      "note": "grandfather; 'Papaw' IS in the kin table -> relation should hit"
+    },
+    {
+      "canonical": "Opal",
+      "forms": [
+        "Opal"
+      ],
+      "gender": "F",
+      "replace": true,
+      "note": "grandmother; 'Mamaw' is NOT in the kin table -> expected relation miss"
+    },
+    {
+      "canonical": "Denver",
+      "forms": [
+        "Denver"
+      ],
+      "gender": "M",
+      "replace": true,
+      "note": "brother; also a city name (Denver, CO) -> possible mistype if read as a place"
+    },
+    {
+      "canonical": "Loretta",
+      "forms": [
+        "Loretta",
+        "Sissy"
+      ],
+      "gender": "F",
+      "replace": true,
+      "note": "sister; alias 'called her Sissy' matches the cue rule -> merge should hit"
+    },
+    {
+      "canonical": "Bill",
+      "forms": [
+        "Bill"
+      ],
+      "gender": "M",
+      "replace": true,
+      "note": "uncle; shares a given name with foreman Bill Ratliff -> containment over-merge trap"
+    },
+    {
+      "canonical": "Bill Ratliff",
+      "forms": [
+        "Bill Ratliff"
+      ],
+      "gender": "M",
+      "replace": true,
+      "subtype": "PROFESSIONAL",
+      "note": "mine foreman; 'Bill' folds into this full name -> expected over-merge with the uncle"
+    },
+    {
+      "canonical": "Brother Estep",
+      "forms": [
+        "Brother Estep"
+      ],
+      "gender": "M",
+      "replace": true,
+      "subtype": "PROFESSIONAL",
+      "note": "preacher; 'Brother' is a kin/title token that normalize() strips"
+    },
+    {
+      "canonical": "Dr. Combs",
+      "forms": [
+        "Dr. Combs"
+      ],
+      "gender": "M",
+      "replace": true,
+      "subtype": "PROFESSIONAL",
+      "note": "doctor"
+    },
+    {
+      "canonical": "Kennedy",
+      "forms": [
+        "Kennedy"
+      ],
+      "gender": "M",
+      "replace": false,
+      "note": "public figure in list -> keep"
+    },
+    {
+      "canonical": "John L. Lewis",
+      "forms": [
+        "John L. Lewis"
+      ],
+      "gender": "M",
+      "replace": false,
+      "note": "real public figure NOT in list -> expected over-redaction"
+    },
+    {
+      "canonical": "Reagan",
+      "forms": [
+        "Reagan"
+      ],
+      "gender": "M",
+      "replace": false,
+      "note": "public figure in list -> keep"
+    }
   ],
   "relations": [
-    {"source": "INTERVIEWEE", "target": "Earl", "detail": "father"},
-    {"source": "INTERVIEWEE", "target": "Ruby", "detail": "mother"},
-    {"source": "INTERVIEWEE", "target": "Clarence", "detail": "grandfather"},
-    {"source": "INTERVIEWEE", "target": "Opal", "detail": "grandmother", "note": "'Mamaw' not in kin table -> expected miss"},
-    {"source": "INTERVIEWEE", "target": "Denver", "detail": "brother"},
-    {"source": "INTERVIEWEE", "target": "Loretta", "detail": "sister"},
-    {"source": "INTERVIEWEE", "target": "Bill", "detail": "uncle"}
+    {
+      "source": "INTERVIEWEE",
+      "target": "Earl",
+      "detail": "father"
+    },
+    {
+      "source": "INTERVIEWEE",
+      "target": "Ruby",
+      "detail": "mother"
+    },
+    {
+      "source": "INTERVIEWEE",
+      "target": "Clarence",
+      "detail": "grandfather"
+    },
+    {
+      "source": "INTERVIEWEE",
+      "target": "Opal",
+      "detail": "grandmother",
+      "note": "'Mamaw' not in kin table -> expected miss"
+    },
+    {
+      "source": "INTERVIEWEE",
+      "target": "Denver",
+      "detail": "brother"
+    },
+    {
+      "source": "INTERVIEWEE",
+      "target": "Loretta",
+      "detail": "sister"
+    },
+    {
+      "source": "INTERVIEWEE",
+      "target": "Bill",
+      "detail": "uncle"
+    }
   ],
   "dates": [
-    {"text": "March 4th, 1951", "category": "DATE_OF_BIRTH", "resolved": "1951-03-04", "tolerance_days": 0, "note": "this is EARL's DOB (a relative's), stated in third person -> tests LLM DOB-ownership (should attribute to Earl, not the interviewee)"},
-    {"text": "1921", "category": "DATE_ABSOLUTE", "resolved": "1921-01-01", "tolerance_days": 0},
-    {"text": "nineteen and sixty", "category": "DATE_ABSOLUTE", "resolved": "1960-01-01", "tolerance_days": 0, "note": "spoken/dialect year -> dateutil cannot parse -> expected miss"},
-    {"text": "Buffalo Creek flood", "category": "DATE_ANCHOR", "resolved": "1972-02-26", "tolerance_days": 0, "note": "regional anchor NOT in table -> expected miss"},
-    {"text": "Great Recession", "category": "DATE_ANCHOR", "resolved": "2008-09-15", "tolerance_days": 0, "note": "table key is 'the great recession' with the article; span without 'the' fails substring match -> expected miss (anchor-table brittleness)"},
-    {"text": "9/11", "category": "DATE_ANCHOR", "resolved": "2001-09-11", "tolerance_days": 0},
-    {"text": "the eighties", "category": "DATE_RELATIVE", "expect_flag": true, "note": "bare decade -> not resolvable to a day; flagging is correct"},
-    {"text": "thirty-odd years ago", "category": "DATE_RELATIVE", "resolved": "1986-09-15", "tolerance_days": 730, "note": "'thirty-odd' count not parseable by the relative-date regex -> expected miss"},
-    {"text": "A few years ago", "category": "DATE_RELATIVE", "resolved": "2016-09-15", "tolerance_days": 60}
+    {
+      "text": "March 4th, 1951",
+      "category": "DATE_OF_BIRTH",
+      "resolved": "1951-03-04",
+      "tolerance_days": 0,
+      "note": "the father Earl's date of birth ('He was born March 4th, 1951')",
+      "owner": "other"
+    },
+    {
+      "text": "1921",
+      "category": "DATE_ABSOLUTE",
+      "resolved": "1921-01-01",
+      "tolerance_days": 0
+    },
+    {
+      "text": "nineteen and sixty",
+      "category": "DATE_ABSOLUTE",
+      "resolved": "1960-01-01",
+      "tolerance_days": 0,
+      "note": "spoken/dialect year -> dateutil cannot parse -> expected miss"
+    },
+    {
+      "text": "Buffalo Creek flood",
+      "category": "DATE_ANCHOR",
+      "resolved": "1972-02-26",
+      "tolerance_days": 0,
+      "note": "regional anchor NOT in table -> expected miss"
+    },
+    {
+      "text": "Great Recession",
+      "category": "DATE_ANCHOR",
+      "resolved": "2008-09-15",
+      "tolerance_days": 0,
+      "note": "table key is 'the great recession' with the article; span without 'the' fails substring match -> expected miss (anchor-table brittleness)"
+    },
+    {
+      "text": "9/11",
+      "category": "DATE_ANCHOR",
+      "resolved": "2001-09-11",
+      "tolerance_days": 0
+    },
+    {
+      "text": "the eighties",
+      "category": "DATE_RELATIVE",
+      "expect_flag": true,
+      "note": "bare decade -> not resolvable to a day; flagging is correct"
+    },
+    {
+      "text": "thirty-odd years ago",
+      "category": "DATE_RELATIVE",
+      "resolved": "1986-09-15",
+      "tolerance_days": 730,
+      "note": "'thirty-odd' count not parseable by the relative-date regex -> expected miss"
+    },
+    {
+      "text": "A few years ago",
+      "category": "DATE_RELATIVE",
+      "resolved": "2016-09-15",
+      "tolerance_days": 60
+    }
   ],
   "ages": [
-    {"text": "fourteen", "value": 14, "tolerance": 0},
-    {"text": "eighteen", "value": 18, "tolerance": 0},
-    {"text": "fifty-five", "value": 55, "tolerance": 0},
-    {"text": "his fifties", "value": 55, "tolerance": 5},
-    {"text": "ninety-one", "value": 91, "tolerance": 0},
-    {"text": "thirty-seven", "value": 37, "tolerance": 0},
-    {"text": "sixty-eight", "value": 68, "tolerance": 0}
+    {
+      "text": "fourteen",
+      "value": 14,
+      "tolerance": 0,
+      "owner": "other"
+    },
+    {
+      "text": "eighteen",
+      "value": 18,
+      "tolerance": 0,
+      "owner": "interviewee"
+    },
+    {
+      "text": "fifty-five",
+      "value": 55,
+      "tolerance": 0,
+      "owner": "interviewee"
+    },
+    {
+      "text": "his fifties",
+      "value": 55,
+      "tolerance": 5,
+      "owner": "other"
+    },
+    {
+      "text": "ninety-one",
+      "value": 91,
+      "tolerance": 0,
+      "owner": "other"
+    },
+    {
+      "text": "thirty-seven",
+      "value": 37,
+      "tolerance": 0,
+      "owner": "other"
+    },
+    {
+      "text": "sixty-eight",
+      "value": 68,
+      "tolerance": 0,
+      "owner": "interviewee"
+    }
   ],
   "locations": [
-    {"text": "West Virginia", "in_gazetteer": true},
-    {"text": "Mingo County", "in_gazetteer": false},
-    {"text": "Matewan", "in_gazetteer": false},
-    {"text": "Red Jacket", "in_gazetteer": false},
-    {"text": "Williamson", "in_gazetteer": false},
-    {"text": "Logan", "in_gazetteer": false},
-    {"text": "Detroit", "in_gazetteer": true},
-    {"text": "Columbus", "in_gazetteer": true},
-    {"text": "Tug Fork", "in_gazetteer": false},
-    {"text": "Charleston", "in_gazetteer": true, "note": "WV capital, but the gazetteer key 'charleston' resolves to Charleston, SC -> typed but WRONG parent/state (key-collision)"},
-    {"text": "Washington", "in_gazetteer": true, "note": "means D.C. here, but bare 'Washington' resolves to the state -> semantic mismatch"},
-    {"text": "Freewill Baptist", "in_gazetteer": false}
+    {
+      "text": "West Virginia",
+      "in_gazetteer": true,
+      "type": "state",
+      "replace": false
+    },
+    {
+      "text": "Mingo County",
+      "in_gazetteer": false,
+      "type": "region",
+      "replace": false
+    },
+    {
+      "text": "Matewan",
+      "in_gazetteer": false,
+      "type": "city",
+      "replace": true
+    },
+    {
+      "text": "Red Jacket",
+      "in_gazetteer": false,
+      "type": "city",
+      "replace": true
+    },
+    {
+      "text": "Williamson",
+      "in_gazetteer": false,
+      "type": "city",
+      "replace": true
+    },
+    {
+      "text": "Logan",
+      "in_gazetteer": false,
+      "type": "city",
+      "replace": true
+    },
+    {
+      "text": "Detroit",
+      "in_gazetteer": true,
+      "type": "city",
+      "replace": true
+    },
+    {
+      "text": "Columbus",
+      "in_gazetteer": true,
+      "type": "city",
+      "replace": true
+    },
+    {
+      "text": "Tug Fork",
+      "in_gazetteer": false,
+      "type": "feature",
+      "replace": true
+    },
+    {
+      "text": "Charleston",
+      "in_gazetteer": true,
+      "note": "WV capital, but the gazetteer key 'charleston' resolves to Charleston, SC -> typed but WRONG parent/state (key-collision)",
+      "type": "city",
+      "replace": true
+    },
+    {
+      "text": "Washington",
+      "in_gazetteer": true,
+      "note": "means D.C. here, but bare 'Washington' resolves to the state -> semantic mismatch",
+      "type": "city",
+      "replace": true
+    },
+    {
+      "text": "Freewill Baptist",
+      "in_gazetteer": false,
+      "type": "institution",
+      "replace": true
+    }
   ],
   "identifiers": [
-    {"text": "304-555-0176", "type": "PHONE"},
-    {"text": "hollowridge51@example.org", "type": "EMAIL"},
-    {"text": "5-338-2201", "type": "SSN_OR_ID"},
-    {"text": "@coalcountry_grandkids", "type": "USERNAME_HANDLE", "note": "grandson's -> owner should be 'other'"},
-    {"text": "miners", "type": "OCCUPATION"},
-    {"text": "schoolteacher", "type": "OCCUPATION"},
-    {"text": "foreman", "type": "OCCUPATION"},
-    {"text": "preacher", "type": "OCCUPATION"}
+    {
+      "text": "304-555-0176",
+      "type": "PHONE",
+      "owner": "interviewee"
+    },
+    {
+      "text": "hollowridge51@example.org",
+      "type": "EMAIL",
+      "owner": "interviewee"
+    },
+    {
+      "text": "5-338-2201",
+      "type": "SSN_OR_ID",
+      "owner": "interviewee"
+    },
+    {
+      "text": "@coalcountry_grandkids",
+      "type": "USERNAME_HANDLE",
+      "note": "grandson's -> owner should be 'other'",
+      "owner": "other"
+    },
+    {
+      "text": "miners",
+      "type": "OCCUPATION",
+      "owner": "other"
+    },
+    {
+      "text": "schoolteacher",
+      "type": "OCCUPATION",
+      "owner": "other"
+    },
+    {
+      "text": "foreman",
+      "type": "OCCUPATION",
+      "owner": "other"
+    },
+    {
+      "text": "preacher",
+      "type": "OCCUPATION",
+      "owner": "other"
+    }
   ]
 }

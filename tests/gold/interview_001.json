@@ -1,72 +1,392 @@
 {
   "transcript_id": "interview_001",
   "interview_date": "2015-04-18",
+  "interviewee": {
+    "identity": null,
+    "gender": "F",
+    "ethnicity": "vietnamese",
+    "dob": "1968-09-03",
+    "note": "female: 'My husband, Duc'; never named in the transcript"
+  },
   "people": [
-    {"canonical": "Bao", "forms": ["Bao"], "gender": "M", "replace": true, "note": "father"},
-    {"canonical": "Hoa", "forms": ["Hoa"], "gender": "F", "replace": true, "note": "mother"},
-    {"canonical": "Minh", "forms": ["Minh", "Sonny"], "gender": "M", "replace": true, "note": "brother; nickname introduced with 'calling' (cue rule matches call/called/calls, not calling) -> expected alias miss"},
-    {"canonical": "Thao", "forms": ["Thao"], "gender": "F", "replace": true, "note": "aunt (mother's sister)"},
-    {"canonical": "Hai", "forms": ["Hai"], "gender": "M", "replace": true, "note": "uncle; a second unrelated Hai also appears with the SAME surface form -> not separable in this schema, expected over-merge"},
-    {"canonical": "Duc", "forms": ["Duc"], "gender": "M", "replace": true, "note": "husband"},
-    {"canonical": "Trang", "forms": ["Trang"], "gender": "F", "replace": true, "note": "daughter"},
-    {"canonical": "Khanh", "forms": ["Khanh"], "gender": "M", "replace": true, "note": "son"},
-    {"canonical": "Father Nguyen", "forms": ["Father Nguyen"], "gender": "M", "replace": true, "subtype": "PROFESSIONAL", "note": "priest; surname collides with the family surname Nguyen"},
-    {"canonical": "Mr. Landry", "forms": ["Mr. Landry"], "gender": "M", "replace": true, "note": "Cajun neighbor"},
-    {"canonical": "Ms. Boudreaux", "forms": ["Ms. Boudreaux"], "gender": "F", "replace": true, "subtype": "PROFESSIONAL", "note": "diocese caseworker"},
-    {"canonical": "Obama", "forms": ["Obama"], "gender": "M", "replace": false, "note": "public figure in list -> keep; co-sign may fail to affirm and over-redact"},
-    {"canonical": "Governor Barbour", "forms": ["Governor Barbour"], "gender": "M", "replace": false, "note": "real public figure NOT in list -> expected over-redaction"},
-    {"canonical": "Anderson Cooper", "forms": ["Anderson Cooper"], "gender": "M", "replace": false, "note": "real public figure NOT in list -> expected over-redaction"}
+    {
+      "canonical": "Bao",
+      "forms": [
+        "Bao"
+      ],
+      "gender": "M",
+      "replace": true,
+      "note": "father"
+    },
+    {
+      "canonical": "Hoa",
+      "forms": [
+        "Hoa"
+      ],
+      "gender": "F",
+      "replace": true,
+      "note": "mother"
+    },
+    {
+      "canonical": "Minh",
+      "forms": [
+        "Minh",
+        "Sonny"
+      ],
+      "gender": "M",
+      "replace": true,
+      "note": "brother; nickname introduced with 'calling' (cue rule matches call/called/calls, not calling) -> expected alias miss"
+    },
+    {
+      "canonical": "Thao",
+      "forms": [
+        "Thao"
+      ],
+      "gender": "F",
+      "replace": true,
+      "note": "aunt (mother's sister)"
+    },
+    {
+      "canonical": "Hai",
+      "forms": [
+        "Hai"
+      ],
+      "gender": "M",
+      "replace": true,
+      "note": "uncle; a second unrelated Hai also appears with the SAME surface form -> not separable in this schema, expected over-merge"
+    },
+    {
+      "canonical": "Duc",
+      "forms": [
+        "Duc"
+      ],
+      "gender": "M",
+      "replace": true,
+      "note": "husband"
+    },
+    {
+      "canonical": "Trang",
+      "forms": [
+        "Trang"
+      ],
+      "gender": "F",
+      "replace": true,
+      "note": "daughter"
+    },
+    {
+      "canonical": "Khanh",
+      "forms": [
+        "Khanh"
+      ],
+      "gender": "M",
+      "replace": true,
+      "note": "son"
+    },
+    {
+      "canonical": "Father Nguyen",
+      "forms": [
+        "Father Nguyen"
+      ],
+      "gender": "M",
+      "replace": true,
+      "subtype": "PROFESSIONAL",
+      "note": "priest; surname collides with the family surname Nguyen"
+    },
+    {
+      "canonical": "Mr. Landry",
+      "forms": [
+        "Mr. Landry"
+      ],
+      "gender": "M",
+      "replace": true,
+      "note": "Cajun neighbor"
+    },
+    {
+      "canonical": "Ms. Boudreaux",
+      "forms": [
+        "Ms. Boudreaux"
+      ],
+      "gender": "F",
+      "replace": true,
+      "subtype": "PROFESSIONAL",
+      "note": "diocese caseworker"
+    },
+    {
+      "canonical": "Obama",
+      "forms": [
+        "Obama"
+      ],
+      "gender": "M",
+      "replace": false,
+      "note": "public figure in list -> keep; co-sign may fail to affirm and over-redact"
+    },
+    {
+      "canonical": "Governor Barbour",
+      "forms": [
+        "Governor Barbour"
+      ],
+      "gender": "M",
+      "replace": false,
+      "note": "real public figure NOT in list -> expected over-redaction"
+    },
+    {
+      "canonical": "Anderson Cooper",
+      "forms": [
+        "Anderson Cooper"
+      ],
+      "gender": "M",
+      "replace": false,
+      "note": "real public figure NOT in list -> expected over-redaction"
+    }
   ],
   "relations": [
-    {"source": "INTERVIEWEE", "target": "Bao", "detail": "father"},
-    {"source": "INTERVIEWEE", "target": "Hoa", "detail": "mother"},
-    {"source": "INTERVIEWEE", "target": "Minh", "detail": "brother"},
-    {"source": "INTERVIEWEE", "target": "Thao", "detail": "aunt"},
-    {"source": "INTERVIEWEE", "target": "Hai", "detail": "uncle"},
-    {"source": "INTERVIEWEE", "target": "Duc", "detail": "husband"},
-    {"source": "INTERVIEWEE", "target": "Trang", "detail": "daughter"},
-    {"source": "INTERVIEWEE", "target": "Khanh", "detail": "son"}
+    {
+      "source": "INTERVIEWEE",
+      "target": "Bao",
+      "detail": "father"
+    },
+    {
+      "source": "INTERVIEWEE",
+      "target": "Hoa",
+      "detail": "mother"
+    },
+    {
+      "source": "INTERVIEWEE",
+      "target": "Minh",
+      "detail": "brother"
+    },
+    {
+      "source": "INTERVIEWEE",
+      "target": "Thao",
+      "detail": "aunt"
+    },
+    {
+      "source": "INTERVIEWEE",
+      "target": "Hai",
+      "detail": "uncle"
+    },
+    {
+      "source": "INTERVIEWEE",
+      "target": "Duc",
+      "detail": "husband"
+    },
+    {
+      "source": "INTERVIEWEE",
+      "target": "Trang",
+      "detail": "daughter"
+    },
+    {
+      "source": "INTERVIEWEE",
+      "target": "Khanh",
+      "detail": "son"
+    }
   ],
   "dates": [
-    {"text": "September 3rd, 1968", "category": "DATE_OF_BIRTH", "resolved": "1968-09-03", "tolerance_days": 0},
-    {"text": "spring of 1975", "category": "DATE_ABSOLUTE", "resolved": "1975-03-20", "tolerance_days": 45, "note": "season -> rule fuzzy-parses year only (Jan 1), off by ~78d, expected miss"},
-    {"text": "Saigon fell", "category": "DATE_ANCHOR", "resolved": "1975-04-30", "tolerance_days": 0, "note": "real anchor NOT in ANCHOR_EVENTS table -> expected rule miss"},
-    {"text": "Hurricane Katrina", "category": "DATE_ANCHOR", "resolved": "2005-08-29", "tolerance_days": 0},
-    {"text": "BP oil spill", "category": "DATE_ANCHOR", "resolved": "2010-04-20", "tolerance_days": 0},
-    {"text": "six years ago", "category": "DATE_RELATIVE", "resolved": "2009-04-18", "tolerance_days": 45},
-    {"text": "couple summers back", "category": "DATE_RELATIVE", "resolved": "2013-06-21", "tolerance_days": 90, "note": "'back' not 'ago' and season plural -> expected miss"},
-    {"text": "Last spring", "category": "DATE_RELATIVE", "resolved": "2015-03-20", "tolerance_days": 40}
+    {
+      "text": "September 3rd, 1968",
+      "category": "DATE_OF_BIRTH",
+      "resolved": "1968-09-03",
+      "tolerance_days": 0,
+      "owner": "interviewee"
+    },
+    {
+      "text": "spring of 1975",
+      "category": "DATE_ABSOLUTE",
+      "resolved": "1975-03-20",
+      "tolerance_days": 45,
+      "note": "season -> rule fuzzy-parses year only (Jan 1), off by ~78d, expected miss"
+    },
+    {
+      "text": "Saigon fell",
+      "category": "DATE_ANCHOR",
+      "resolved": "1975-04-30",
+      "tolerance_days": 0,
+      "note": "real anchor NOT in ANCHOR_EVENTS table -> expected rule miss"
+    },
+    {
+      "text": "Hurricane Katrina",
+      "category": "DATE_ANCHOR",
+      "resolved": "2005-08-29",
+      "tolerance_days": 0
+    },
+    {
+      "text": "BP oil spill",
+      "category": "DATE_ANCHOR",
+      "resolved": "2010-04-20",
+      "tolerance_days": 0
+    },
+    {
+      "text": "six years ago",
+      "category": "DATE_RELATIVE",
+      "resolved": "2009-04-18",
+      "tolerance_days": 45
+    },
+    {
+      "text": "couple summers back",
+      "category": "DATE_RELATIVE",
+      "resolved": "2013-06-21",
+      "tolerance_days": 90,
+      "note": "'back' not 'ago' and season plural -> expected miss"
+    },
+    {
+      "text": "Last spring",
+      "category": "DATE_RELATIVE",
+      "resolved": "2015-03-20",
+      "tolerance_days": 40
+    }
   ],
   "ages": [
-    {"text": "seven", "value": 7, "tolerance": 0},
-    {"text": "forty-something", "value": 45, "tolerance": 5},
-    {"text": "nineteen", "value": 19, "tolerance": 0},
-    {"text": "twenty-three", "value": 23, "tolerance": 0},
-    {"text": "twelve", "value": 12, "tolerance": 0},
-    {"text": "sixteen", "value": 16, "tolerance": 0},
-    {"text": "her eighties", "value": 82, "tolerance": 5}
+    {
+      "text": "seven",
+      "value": 7,
+      "tolerance": 0,
+      "owner": "interviewee"
+    },
+    {
+      "text": "forty-something",
+      "value": 45,
+      "tolerance": 5,
+      "owner": "other"
+    },
+    {
+      "text": "nineteen",
+      "value": 19,
+      "tolerance": 0,
+      "owner": "interviewee"
+    },
+    {
+      "text": "twenty-three",
+      "value": 23,
+      "tolerance": 0,
+      "owner": "interviewee"
+    },
+    {
+      "text": "twelve",
+      "value": 12,
+      "tolerance": 0,
+      "owner": "other"
+    },
+    {
+      "text": "sixteen",
+      "value": 16,
+      "tolerance": 0,
+      "owner": "other"
+    },
+    {
+      "text": "her eighties",
+      "value": 82,
+      "tolerance": 5,
+      "owner": "other"
+    }
   ],
   "locations": [
-    {"text": "Vietnam", "in_gazetteer": true},
-    {"text": "Saigon", "in_gazetteer": false},
-    {"text": "Mekong Delta", "in_gazetteer": false},
-    {"text": "Palawan", "in_gazetteer": false},
-    {"text": "Philippines", "in_gazetteer": true},
-    {"text": "Biloxi", "in_gazetteer": true},
-    {"text": "Bayou La Batre", "in_gazetteer": false},
-    {"text": "Mobile", "in_gazetteer": true},
-    {"text": "Gulf of Mexico", "in_gazetteer": false},
-    {"text": "Our Lady of Fatima", "in_gazetteer": false},
-    {"text": "Alabama", "in_gazetteer": true}
+    {
+      "text": "Vietnam",
+      "in_gazetteer": true,
+      "type": "country",
+      "replace": false
+    },
+    {
+      "text": "Saigon",
+      "in_gazetteer": false,
+      "type": "city",
+      "replace": true
+    },
+    {
+      "text": "Mekong Delta",
+      "in_gazetteer": false,
+      "type": "region",
+      "replace": false
+    },
+    {
+      "text": "Palawan",
+      "in_gazetteer": false,
+      "type": "region",
+      "replace": false
+    },
+    {
+      "text": "Philippines",
+      "in_gazetteer": true,
+      "type": "country",
+      "replace": false
+    },
+    {
+      "text": "Biloxi",
+      "in_gazetteer": true,
+      "type": "city",
+      "replace": true
+    },
+    {
+      "text": "Bayou La Batre",
+      "in_gazetteer": false,
+      "type": "city",
+      "replace": true
+    },
+    {
+      "text": "Mobile",
+      "in_gazetteer": true,
+      "type": "city",
+      "replace": true
+    },
+    {
+      "text": "Gulf of Mexico",
+      "in_gazetteer": false,
+      "type": "feature",
+      "replace": true
+    },
+    {
+      "text": "Our Lady of Fatima",
+      "in_gazetteer": false,
+      "type": "institution",
+      "replace": true
+    },
+    {
+      "text": "Alabama",
+      "in_gazetteer": true,
+      "type": "state",
+      "replace": false
+    }
   ],
   "identifiers": [
-    {"text": "228-555-0143", "type": "PHONE"},
-    {"text": "nguyenfamilyshrimp@example.net", "type": "EMAIL"},
-    {"text": "MS-2287-C", "type": "SSN_OR_ID"},
-    {"text": "@lebateaushrimp", "type": "USERNAME_HANDLE"},
-    {"text": "seamstress", "type": "OCCUPATION"},
-    {"text": "deckhand", "type": "OCCUPATION"},
-    {"text": "welder", "type": "OCCUPATION"},
-    {"text": "caseworker", "type": "OCCUPATION"}
+    {
+      "text": "228-555-0143",
+      "type": "PHONE",
+      "owner": "interviewee"
+    },
+    {
+      "text": "nguyenfamilyshrimp@example.net",
+      "type": "EMAIL",
+      "owner": "interviewee"
+    },
+    {
+      "text": "MS-2287-C",
+      "type": "SSN_OR_ID",
+      "owner": "interviewee"
+    },
+    {
+      "text": "@lebateaushrimp",
+      "type": "USERNAME_HANDLE",
+      "owner": "other"
+    },
+    {
+      "text": "seamstress",
+      "type": "OCCUPATION",
+      "owner": "other"
+    },
+    {
+      "text": "deckhand",
+      "type": "OCCUPATION",
+      "owner": "other"
+    },
+    {
+      "text": "welder",
+      "type": "OCCUPATION",
+      "owner": "other"
+    },
+    {
+      "text": "caseworker",
+      "type": "OCCUPATION",
+      "owner": "other"
+    }
   ]
 }
