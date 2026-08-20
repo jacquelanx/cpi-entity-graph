@@ -14,6 +14,4 @@ out/
 # LLM decision cache (contains transcript-derived model responses)
 .llm_cache.json
 *.llm_cache.json
-# private
-UNIFICATION_PLAN.md
 .claude/

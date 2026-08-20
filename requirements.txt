@@ -2,4 +2,4 @@ networkx>=3.0
 python-dateutil>=2.8
 fastcoref
 transformers>=4.30,<5
-pyvis>=0.3
+pyvis>=0.3 
