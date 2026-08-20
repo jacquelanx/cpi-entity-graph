@@ -1,10 +1,36 @@
 """
-Putting every date mention on the timeline.
+Dates: put every date mention on the calendar.
 
-DATE_ABSOLUTE  --> parse directly (dateutil).
-DATE_RELATIVE  --> resolve against the interview_date from metadata.
-DATE_ANCHOR    --> match against `ANCHOR_EVENTS`; public events cannot move, so
-                   they CONSTRAIN the date-shift offset.
+PURPOSE
+    Convert each detected date span into an ISO date (`resolved_value`) plus two
+    directives the date-shifter needs: `shiftable` (may this date be moved?) and
+    `approximate` (is the resolved value an estimate?).
+
+WHY IT MATTERS
+    De-identification shifts dates by a secret offset so a birthday cannot be
+    looked up. That only works if the graph knows which dates MAY move. A public
+    event cannot: shifting "9/11" to a date no attack happened on is both absurd
+    and a signal that a shift was applied. So anchors are pinned, and they also
+    CONSTRAIN how far every other date may slide.
+
+FIT
+    `graph/pipeline.run_pipeline` calls `resolve_date_entity` once per date
+    entity, passing the interview date from metadata. `parse_absolute_date` and
+    `parse_spoken_year` are re-used by `graph/checks/dates.py` and
+    `graph/checks/comparators.py`, so the checkers verify a value with the same
+    parser that produced it and the two layers cannot drift.
+
+HOW -- one branch per category
+    DATE_ABSOLUTE / DATE_OF_BIRTH  parse directly (dateutil + the extras in
+                                   `parse_absolute_date`).
+    DATE_RELATIVE                  resolve against the interview date, walking a
+                                   ladder of patterns from most to least specific.
+                                   Always `approximate=True`.
+    DATE_ANCHOR                    look the phrase up in `ANCHOR_EVENTS`; public
+                                   events cannot move, so `shiftable=False`.
+
+    Every failure to resolve sets a review flag rather than guessing, so an
+    unparsed date reaches a human instead of the shifter.
 """
 
 from __future__ import annotations
@@ -123,8 +149,19 @@ _WORD_NUM = {
 }
 
 
-"""Turn the count group of _REL_AGO into an integer (vague -> estimate)."""
 def _count_from_word(raw: str) -> int:
+    """Turn the count phrase of "N units ago" into an integer.
+
+    Handles three kinds of input: vague quantifiers, which get a conventional
+    estimate ("a couple" -> 2, "a few" -> 3, "several" -> 4); spelled-out numbers
+    via `_WORD_NUM` ("three" -> 3); and plain digits ("15" -> 15). The estimates
+    are why every relative date is marked `approximate=True`.
+
+    The `or int(raw)` fallback fires when the word is not in the table, so a
+    digit string is parsed. Note `_WORD_NUM.get(raw, None) or ...` treats a
+    lookup result of 0 the same as a miss -- harmless here, since no entry maps
+    to 0.
+    """
     raw = raw.strip().lower()
     if "couple" in raw:
         return 2
@@ -135,21 +172,6 @@ def _count_from_word(raw: str) -> int:
     return _WORD_NUM.get(raw, None) or int(raw)
 
 
-"""
-Fill entity.attributes with resolved_value / shiftable / approximate.
-DATE_ABSOLUTE / DATE_OF_BIRTH:
-Parse explicit dates (e.g. "March 4, 2020") into ISO format.
-
-DATE_ANCHOR:
-Resolve references to fixed public events and ISO (e.g. "9/11") using the
-`ANCHOR_EVENTS` lookup table (hardcoded). These dates are marked as
-`shiftable=False`.
-
-DATE_RELATIVE:
-Resolve relative expressions (e.g. "2 weeks ago", "last spring", etc)
-relative to the interview date (metadata). These resolutions are marked
-`approximate=True` since they represent estimates.
-"""
 # A SPOKEN year, which carries no digits: "nineteen and sixty", "nineteen
 # sixty-five", "eighteen ninety". dateutil cannot read these, so the rule layer
 # produced nothing for them and the field fell to the LLM -- which the checkers then
@@ -240,6 +262,40 @@ def parse_absolute_date(raw: str) -> tuple[str | None, bool]:
 
 
 def resolve_date_entity(entity: Entity, interview_date) -> None:
+    """Fill one date entity's `resolved_value` / `shiftable` / `approximate`.
+
+    Modifies the entity in place; returns nothing. Dispatches on
+    `entity.category`:
+
+    DATE_ABSOLUTE / DATE_OF_BIRTH
+        Parse an explicit date ("March 4, 2020") to ISO via
+        `parse_absolute_date`. A parse failure flags the entity. A parse that
+        succeeded but found NO explicit year is also flagged -- the year came from
+        the parser default and is almost certainly wrong.
+
+    DATE_ANCHOR
+        Look the phrase up in `ANCHOR_EVENTS` and pin it: `shiftable=False`,
+        `approximate=False` (a listed event has one fixed calendar date). Matching
+        is by SUBSTRING and article-insensitive, trying the longest table phrase
+        first so "hurricane katrina" wins over the bare "katrina". A phrase the
+        table does not know is flagged, which is how the table gets extended.
+
+    DATE_RELATIVE
+        Needs `interview_date`; without it the date is unresolvable and gets
+        flagged. Otherwise walks a ladder of patterns, returning on the first
+        match, from most to least specific: yesterday/today/tomorrow -> "N units
+        ago" -> "last/next <unit>" -> "last <season>" -> "last <weekday>". Always
+        `approximate=True`, since all of these are estimates.
+
+    Two arithmetic details in that ladder are worth spelling out:
+      * "last spring" takes THIS year's season date, then steps back a year if
+        that date has not happened yet at the time of the interview.
+      * "last Tuesday" uses `(today.weekday() - target) % 7 or 7` to find the most
+         recent past occurrence. The modulo gives days since that weekday; the
+         `or 7` turns a result of 0 -- meaning the interview itself was on a
+         Tuesday -- into a full week back, since "last Tuesday" means the previous
+         one, not today.
+    """
     text = entity.mentions[0].text.lower()
     attrs = entity.attributes
     attrs.setdefault("shiftable", True)

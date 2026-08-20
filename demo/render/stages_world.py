@@ -1,6 +1,14 @@
 """
-Panels for the non-person entities: places and their
-hierarchy, dates and ages, and direct identifiers.
+Panels 07-09: places and their hierarchy, dates and ages, direct identifiers.
+
+PURPOSE
+    Render the non-person entities: each with its resolved value, its redaction
+    directive, and the deterministic checks behind them.
+
+FIT
+    Sits on `primitives.py` and `provenance.py`; assembled by
+    `page.transcript_panel`. `_location_tree` reads the LOCATED_IN edges that
+    `graph/rules/locations.py` and `graph/second_line/walk.py` produce.
 """
 
 from __future__ import annotations
@@ -12,6 +20,12 @@ from .provenance import _checks_html, _prov_of
 
 # ---------- 07 · places ----------
 def stage_places(case) -> str:
+    """Panel 07: every place, its gazetteer type, its redaction directive, its checks.
+
+    Followed by `_location_tree`, which draws the LOCATED_IN hierarchy the
+    surrogate generator walks to keep substituted places consistent with each
+    other.
+    """
     ents = {e.entity_id: e for e in case["entities"]}
     places = [e for e in case["entities"]
               if e.category in ("LOCATION", "INSTITUTION")]
@@ -53,6 +67,17 @@ def stage_places(case) -> str:
 
 
 def _location_tree(case) -> str:
+    """The LOCATED_IN hierarchy as an indented tree ("New Orleans" under "Louisiana").
+
+    HOW: LOCATED_IN edges give a child -> parent map, which is inverted into
+    `children` so the tree can be walked downward. ROOTS are the places that are
+    somebody's parent but have no parent themselves -- `{p for p in parents if p
+    not in parent_of}` -- i.e. the outermost places in this transcript. `walk` then
+    recurses, indenting by depth.
+
+    Returns "" when there are no LOCATED_IN edges at all, so the panel simply omits
+    the tree rather than showing an empty one.
+    """
     ents = {e.entity_id: e for e in case["entities"]}
     parent_of = {ed.source: ed.target for ed in case["edges"]
                  if _relname(ed) == "LOCATED_IN"}
@@ -64,6 +89,7 @@ def _location_tree(case) -> str:
     roots = sorted({p for p in parent_of.values() if p not in parent_of})
 
     def walk(nid, depth):
+        """Render one place and, recursively, everything inside it, indented by depth."""
         e = ents.get(nid)
         label = escape(_pname(e)) if e else escape(nid)
         typ = escape(str(e.subtype or "").lower()) if e else ""
@@ -82,6 +108,12 @@ def _location_tree(case) -> str:
 
 # ---------- 08 · dates & ages ----------
 def stage_dates_ages(case) -> str:
+    """Panel 08: dates and ages -- what each resolved to, and whether it may move.
+
+    Both categories are rendered by the same nested `row` helper, since the columns
+    are the same shape; `value_field` names the attribute holding the resolved value
+    (`resolved_value` for a date, `value` for an age).
+    """
     ents = {e.entity_id: e for e in case["entities"]}
     stated = {}
     for ed in case["edges"]:
@@ -94,6 +126,11 @@ def stage_dates_ages(case) -> str:
     names = _names_map(case)
 
     def row(e, resolved, value_field):
+        """One table row for a date or age entity.
+
+        `resolved` is the display value and `value_field` names the attribute it
+        came from, so the same renderer serves both categories.
+        """
         a = e.attributes
         prov = _prov_of(e)
         keep = a.get("replace", True) is False
@@ -154,6 +191,11 @@ def stage_dates_ages(case) -> str:
 
 # ---------- 09 · direct identifiers ----------
 def stage_identifiers(case) -> str:
+    """Panel 09: direct identifiers -- what each is, whose it is, and how that was decided.
+
+    Ownership is the column that matters here: an identifier attributed to the
+    wrong person puts their data into somebody else's surrogate identity.
+    """
     ids = [e for e in case["entities"] if e.category in _ID_CATS]
     if not ids:
         return section("09", "Direct identifiers",

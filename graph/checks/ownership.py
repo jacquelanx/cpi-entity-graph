@@ -1,6 +1,38 @@
 """
 Deterministic checkers for OWNER -- whose identifier / age / DOB is this?
 
+PURPOSE
+    Decide, for a phone number / email / age / date of birth / occupation, whether
+    it belongs to the INTERVIEWEE or to somebody else -- or whether the transcript
+    does not say, in which case the field must stay empty and a human decides.
+
+FIT
+    Named by the `owner` policy in `graph/second_line/policies.py`, and called
+    DIRECTLY by `graph/pipeline._link_interviewee_pii` (via `owner_survivors`) so
+    the rule that proposes ownership and the checkers that verify it are literally
+    the same predicates. Reads `rules/kinship.KINSHIP_GENDER` for the kin
+    vocabulary and `graph/text/turns.py` (through `CheckContext`) for turn scoping.
+
+HOW -- three ideas hold this file together
+    1. TWO DIRECTIONS, EACH POSITIVE. There is an `interviewee` family (four
+       checkers) and an `other` family (two). Each returns `na` outside its own
+       direction, so no claim is ever counted as verified by checkers that never
+       looked at it. Crucially "other" requires POSITIVE evidence that somebody
+       else is the referent -- silence is not a vote for "not the speaker".
+    2. ONE CUE POSITION, MANY PREDICATES. `_nearest_cue_end` is the single answer
+       to "where is the first-person cue that binds this span?", and every
+       predicate in both families uses it. When each predicate searched its own
+       window they disagreed, and a widened lookback gained reach without gaining
+       scrutiny.
+    3. REACH IS SAFE BECAUSE OF GUARDS, NOT DISTANCE. The lookback spans up to
+       four sentences, but a third-person subject, a kin noun or a named person
+       appearing BETWEEN the cue and the span refutes the claim -- and the further
+       back the cue, the likelier one of those intervenes.
+
+    Every predicate is lifted by `_claim` to require UNANIMITY across the entity's
+    mentions, and every cue search runs over `ctx.subject_transcript`, so the
+    interviewer's first-person speech can never be read as the subject's.
+
 This is the highest-stakes field for interviewee-only de-identification: a false
 'interviewee' attribution mints a surrogate from someone else's data, and a false
 'other' leaves the speaker's own identifier out of their surrogate identity
@@ -79,6 +111,18 @@ _PERSON_NOUNS = {
 
 
 def _is_person_possessor(tok: str, ctx) -> bool:
+    """Is the possessor token a PERSON, rather than a thing?
+
+    Needed because "Email's nguyenfamilyshrimp@example.net" and "Phone's
+    304-555-0176" are grammatically possessives whose head is the identifier
+    itself -- reading them as a person named "Email" handed the speaker's own
+    contact details to a third party.
+
+    Personhood is established from the transcript, not assumed. Four routes: the
+    token is a known kin word, it is a common person noun, it is the first word of
+    some detected person mention, or the transcript itself introduces it with a
+    possessive ("my Mamaw Opal" proves "Mamaw" is a person here).
+    """
     t = tok.lower()
     if t in KINSHIP_GENDER or t in _PERSON_NOUNS:
         return True
@@ -109,8 +153,16 @@ def _claim(name: str, direction: str, per_mention):
     "My father, Earl, went in the mines at fourteen" -- states the owner plainly. With
     every span the interviewer's, there is genuinely nothing to read and the checker
     still fails.
+
+    HOW: returns a CLOSURE -- `_claim` is a decorator-like factory, so
+    `first_person_cue_present = _claim("first_person_cue", "interviewee", _fp_cue)`
+    turns a small per-mention predicate into a full checker. The closure does the
+    bookkeeping once: bail out with `na` if this is not its direction, drop
+    mentions the subject did not utter, fail if none are left, then run the
+    predicate on every remaining mention and fail on the first refusal.
     """
     def checker(value, ctx) -> CheckOutcome:
+        """The lifted checker: `na` outside its direction, else unanimity over mentions."""
         if str(value) != direction:
             return na(name, f"not an {direction!r} claim")
         mentions = getattr(ctx.entity, "mentions", [])

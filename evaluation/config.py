@@ -1,5 +1,22 @@
 """
-Run configuration for the evaluation harness.
+Run configuration for the evaluation harness: env flags, paths, the LLM client.
+
+PURPOSE
+    One place for everything the harness needs before it can run: which optional
+    stages are on, where the samples live, and the shared LLM client.
+
+FIT
+    The bottom of `evaluation/` -- every other module in the package imports it,
+    and the import ORDER matters (see below). Nothing here depends on `graph`
+    except the lazy `llm_layer` client.
+
+HOW -- and why it has to be imported first
+    This module has IMPORT-TIME SIDE EFFECTS, and they only work if they happen
+    before the libraries they configure are loaded: it puts the repo root on
+    `sys.path`, silences the fastcoref / transformers / datasets loggers, and sets
+    the HuggingFace verbosity environment variables. `graph.pipeline` pulls those
+    libraries in transitively, so importing it first would leave the log noise in
+    place.
 
 IMPORT THIS FIRST from every other module in the package. Quieting the
 fastcoref / transformers / datasets loggers only works if it happens BEFORE

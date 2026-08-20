@@ -1,6 +1,44 @@
 """
 Deterministic checkers for `same_person` -- are these two PERSON entities one human?
 
+PURPOSE
+    Judge a claim that two person entities are the same human, whether that claim
+    is a proposal or a merge the rules already performed. What separates a real
+    find ("Minh" is "Sonny") from a hallucination is whether the TRANSCRIPT links
+    them, and these checkers are that test.
+
+FIT
+    Named by the `same_person` policy in `graph/second_line/policies.py`, driven by
+    `graph/second_line/walk._resolve_merges`. Merge records come from
+    `rules/aliases.py`, `rules/coref.py`, `rules/name_matching.py` and
+    `pipeline._ambiguous_merge_claims`. The alias cue regexes are imported
+    verbatim from `rules/aliases.py`.
+
+HOW -- TWO EVIDENCE ROUTES, exactly one per pair
+    A same-person claim can rest on either of two facts, and the checkers split on
+    which:
+
+      SHARED NAME  the two sides are two spellings of one name ("Bill" /
+                   "Bill Ratliff", "Will" / "William"). Judged by
+                   `names_share_a_token`; `alias_cue_present` returns `na`.
+      ALIAS CUE    the two sides are different names linked by an explicit
+                   construction ("we called Roberto Beto"). Judged by
+                   `alias_cue_present`; `names_share_a_token` returns `na`.
+
+    Splitting them matters because each route lacks the other's evidence by
+    nature, so a single combined test would refute every legitimate claim of one
+    kind.
+
+    A pair rides on `ctx.pair` the way a relation does
+    (`(a_entity_id, b_entity_id, evidence_quote)`), and the value is the boolean
+    "same person".
+
+    ONE SUBTLETY THROUGHOUT: these run on merges the rules ALREADY APPLIED, and an
+    applied merge has FOLDED one entity into the other. So every accessor here
+    (`_own_mentions`, `_forms`, `_tokens`) takes the other side as an argument and
+    subtracts its spans, recovering the pre-merge view -- otherwise a merged entity
+    appears to co-occur with itself.
+
 This is the "structural identity" class the second line used to exclude, on the
 grounds that "is the field filled?" is meaningless for a merge. That reasoning
 holds for the *question shape*, but not for the consequence: alias, nickname and
@@ -45,6 +83,12 @@ from . import CheckOutcome, ok, fail, na
 
 
 def _pair_entities(ctx):
+    """Unpack `ctx.pair` into `(entity_a, entity_b, evidence_quote)`.
+
+    Ids are resolved through `ctx.ent_by_id`, which includes folded-away entities,
+    so both sides of an applied merge are still reachable. Returns
+    `(None, None, "")` when no pair is set.
+    """
     pair = getattr(ctx, "pair", None)
     if pair is None:
         return None, None, ""
@@ -79,7 +123,11 @@ def _forms(ent, other=None):
 
 
 def _tokens(ent, other=None) -> set[str]:
-    """Normalized name tokens (titles / kin words stripped) for one side."""
+    """Normalized name tokens (titles / kin words stripped) for one side.
+
+    Uses the same `normalize` the clustering rule uses, so "what counts as the
+    same name" is defined once. Pass `other` to exclude forms a fold contributed.
+    """
     from ..rules.name_matching import normalize
     toks: set[str] = set()
     for f in _forms(ent, other):
@@ -108,8 +156,14 @@ def _share_a_name_token(a, b) -> str:
 
 
 def _names_in(ent, text_lower: str, other=None) -> bool:
-    """Whole-word match, so a short name cannot ground on a longer one
-    ('ruth' must not match inside 'ruthie')."""
+    """Does the given lowercased text mention this entity by one of its own names?
+
+    Whole-word match, so a short name cannot ground on a longer one
+    ('ruth' must not match inside 'ruthie'). The `(?<![a-z0-9])` /
+    `(?![a-z0-9])` lookarounds are the boundary test -- used instead of `\b`
+    because a surface form may contain spaces or punctuation, where `\b` lands in
+    the wrong place.
+    """
     for f in _forms(ent, other):
         if re.search(r"(?<![a-z0-9])" + re.escape(f.lower()) + r"(?![a-z0-9])",
                      text_lower):

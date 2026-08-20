@@ -1,9 +1,27 @@
 """
 Writing a settled `Resolution` back onto the entity.
 
-`apply_resolution` is the only place a decision becomes state: the attribute,
-the provenance record, the review flag, and the legacy mirror keys older
-consumers still read.
+PURPOSE
+    `apply_resolution` is the ONLY place a decision becomes state. It writes four
+    things: the attribute itself, the provenance record, a review flag when a human
+    is needed, and the legacy `suggested_*` mirror keys older consumers still read.
+
+FIT
+    Called by `walk.py` after every `engine.second_line` decision, and directly by
+    `graph/rules/interviewee.py` for its one early field. Reads the vocabulary from
+    `outcomes.py` and (lazily, for `kind`) `checks/identifiers.renormalized_attrs`.
+
+HOW -- two rules that are easy to get wrong
+    1. KEEP WRITES. For most fields that is a no-op, since the rule layer already
+       put its answer on the entity. But a value COMPUTED during arbitration has no
+       other way to land, and with the LLM off every such field resolves KEEP.
+    2. ABSTENTION MUST ERASE. The rules write their answers onto the entity BEFORE
+       arbitration runs, so a resolution concluding "no verified value" has to
+       actively remove the refuted value -- and its COMPANION keys (see
+       `_COMPANION_ATTRS`), or the erasure is only half done and a consumer reads a
+       verified-looking claim with no value behind it.
+
+    Both are argued in detail at the code below.
 """
 
 from __future__ import annotations
@@ -94,7 +112,24 @@ _COMPANION_ATTRS: dict[str, tuple] = {
 
 
 def apply_resolution(ent, res: Resolution, policy: FieldPolicy) -> None:
-    """Write the resolved value, its provenance, and a flag when a human is needed."""
+    """Write the resolved value, its provenance, and a flag when a human is needed.
+
+    Steps, in order:
+      1. Record the `Resolution` on `ent.provenance[field]` -- unconditionally, so
+         even a rejection leaves an audit trail.
+      2. WRITE or ERASE the attribute, per the two rules in the module docstring.
+         `subtype` and `category` are special-cased: subtype lives on the entity
+         rather than in `attributes`, and an entity is NEVER re-typed from a
+         suggestion.
+      3. For `kind`, regenerate the derived sub-attributes from the rule regexes.
+      4. Mirror the legacy keys the report reads.
+      5. Flag for review, with wording that reflects what actually happened -- a
+         fill no checker inspected says so explicitly, and a checker-derived value
+         is not described as coming from the LLM.
+
+    A `confirm` returns early from step 5: both layers agreed, so there is nothing
+    for a human to arbitrate.
+    """
     if not hasattr(ent, "provenance"):
         ent.provenance = {}
     ent.provenance[policy.field] = res

@@ -1,5 +1,31 @@
 """
-Windowed "read-along" PROPOSER.
+Windowed "read-along" PROPOSER: gender, name parts, role, ethnicity, relations, aliases.
+
+PURPOSE
+    Let the model actually READ the transcript and extract several things at once,
+    in one bounded pass. Everything it finds is returned as data; this module
+    mutates nothing.
+
+FIT
+    The largest of the three proposal passes `graph/pipeline.run_pipeline` runs.
+    Its `_sentences` helper is also imported by `identifier_judge.py` and
+    `client.py`. It receives a `subject_mask` STRING from the pipeline rather than
+    importing `graph.text.turns`, which is how it stays free of any `graph`
+    dependency.
+
+HOW -- three ideas
+    1. TAGGED WINDOWS. The transcript is split into ~4000-character windows on
+       sentence boundaries, and inside each window every detected person is wrapped
+       as `[P3 Ronnie]`. The model then refers to people by ID rather than by name,
+       which removes the ambiguity that makes free-text answers hard to map back.
+       P0 is always the interviewee. One call per window, so cost is linear in
+       transcript length.
+    2. VOTING ACROSS WINDOWS. A person mentioned in five windows gets five
+       opinions. Answers are tallied in `Counter`s and the most common one wins;
+       agreement across windows becomes "high" confidence, a lone answer "low".
+    3. QUOTE VERIFICATION. Every claim must come with an exact quote, and
+       `verified()` checks that quote really appears in the transcript. A model
+       that paraphrases is producing nothing usable, so the claim is dropped.
 
 One bounded pass over the transcript that lets the LLM actually READ the text and
 extract, per window, several things at once. In each window every detected person is
@@ -58,6 +84,13 @@ _CLOSERS = "\"'”’)]"
 
 
 def _ends_sentence(text, seg_start, dot, run):
+    """Is this run of `.?!` a real sentence boundary? (Mirror of graph/text/sentences.py.)
+
+    Suppresses a break after an abbreviation ("Dr."), a single initial ("J."), a
+    dotted acronym ("u.s"), a decimal point ("3.14") and an ellipsis ("...").
+    See `graph/text/sentences._ends_sentence` for the full explanation -- this is a
+    deliberate copy, kept so `llm_layer` imports nothing from `graph`.
+    """
     if run != ".":
         return set(run) != {"."}                     # ellipsis "..." -> not a boundary
     n = len(text)
@@ -72,6 +105,13 @@ def _ends_sentence(text, seg_start, dot, run):
 
 
 def _sentences(text: str):
+    """Sentence spans `(start, end)` tiling `text`. Mirror of `graph.text.sentences`.
+
+    Single left-to-right scan: on hitting a terminator, consume the whole run of
+    them, ask `_ends_sentence` whether it counts, and if so close the span after
+    absorbing any trailing quote or bracket. Also used by `identifier_judge.py`
+    and `client.py`, which import it from here.
+    """
     n = len(text)
     spans, start, i = [], 0, 0
     while i < n:
@@ -95,6 +135,18 @@ def _sentences(text: str):
 
 
 def _pack_windows(sents, budget):
+    """Group consecutive sentences into windows of at most `budget` characters.
+
+    A greedy fill: keep extending the current window with the next sentence while
+    it still fits, otherwise close it and start a new one. Packing by SENTENCE
+    rather than by raw character count means no window ever begins or ends
+    mid-sentence, so the model always reads complete thoughts -- and a quote it
+    returns is a quote from a whole sentence.
+
+    A single sentence longer than `budget` becomes its own oversized window rather
+    than being split, which is the right trade: a truncated sentence is worse than
+    a long one.
+    """
     windows, cs, ce = [], None, None
     for (s, e) in sents:
         if cs is None:
@@ -111,7 +163,17 @@ def _pack_windows(sents, budget):
 
 def _tagged_window(transcript, ws, we, roster):
     """`transcript[ws:we]` with each rostered person's mentions wrapped as
-    `[P<id> text]`. roster: [(pid, entity)] with GLOBAL, stable pids."""
+    `[P<id> text]`. roster: [(pid, entity)] with GLOBAL, stable pids.
+
+    So "I saw Ronnie" becomes "I saw [P3 Ronnie]", and the model can answer with
+    "P3" instead of a name we would then have to match back.
+
+    HOW: collect the mentions falling inside the window, then insert the brackets
+    working BACKWARDS through the text (`sorted(..., key=lambda x: -x[0])`).
+    Inserting back-to-front is what keeps the remaining offsets valid -- every
+    insertion shifts the text after it, so editing from the end means the positions
+    still to be edited have not moved.
+    """
     marks = []
     for pid, e in roster:
         for m in e.mentions:
@@ -159,6 +221,12 @@ _SYS = (
 
 
 def _pid(s):
+    """Parse a person id the model returned into an int, or None.
+
+    Accepts "P3", "p3" and a bare "3", since models are inconsistent about the
+    prefix. Anything else returns None and the claim is dropped rather than
+    guessed at.
+    """
     m = re.fullmatch(r"[Pp]?(\d+)", str(s).strip())
     return int(m.group(1)) if m else None
 
@@ -168,7 +236,13 @@ def _eth_evidenced(quote: str, label: str) -> bool:
     mention the ethnicity/heritage, not merely be real transcript text. (Before this
     check the model could attach any verbatim-but-irrelevant quote and get 'stated'.)
     True when a >=4-char token of the label appears in the quote, or a heritage cue
-    is present; otherwise the claim is demoted to 'inferred'."""
+    is present; otherwise the claim is demoted to 'inferred'.
+
+    The 4-character minimum on label tokens avoids matching on filler like "an"
+    or "of" inside a multi-word label ("African American" is tested on "african"
+    and "american"). The heritage-cue fallback catches a quote that establishes
+    heritage without naming the label verbatim ("we immigrated in '75").
+    """
     q = quote.lower()
     if any(tok in q for tok in re.findall(r"[a-z]{4,}", label.lower())):
         return True
@@ -200,6 +274,18 @@ def extract_pass(transcript: str, entities: list, interviewee, llm,
     data and decided in `graph.second_line`, which is what gives `role`,
     `ethnicity` and alias claims a Resolution, provenance and a ledger row for the
     first time.
+
+    HOW, in three phases:
+
+      SET UP     assign each person a stable global id (P0 = interviewee, P1.. in
+                 order) and create a vote bucket per entity.
+      PER WINDOW pack the transcript into sentence-aligned windows, tag the people
+                 present in each, ask the model, then FILTER its answer -- every
+                 quote must be verifiable transcript text, and a relation or alias
+                 must actually name both parties -- and tally what survives.
+      TALLY UP   turn each vote bucket into one proposal via `propose`, which takes
+                 the most common answer and rates it "high" if more than one window
+                 agreed.
     """
     if llm is None or not llm.available():
         return {}, [], []
@@ -238,6 +324,14 @@ def extract_pass(transcript: str, entities: list, interviewee, llm,
         pid_by_eid[e.entity_id] = i
 
     def _bucket():
+        """A fresh vote tally for one person.
+
+        A `Counter` per field, so each window casts a vote and the winner is
+        whatever most windows said. Keys: g = gender, r = role, gn = given name,
+        sn = surname, plus the two ethnicity buckets (kept separate so a quote-
+        grounded "stated" claim outranks a mere "inferred" guess) and the evidence
+        quote for each ethnicity label.
+        """
         return {"g": Counter(), "r": Counter(), "gn": Counter(), "sn": Counter(),
                 "eth_stated": Counter(), "eth_inferred": Counter(), "eth_ev": {}}
 
@@ -251,6 +345,15 @@ def extract_pass(transcript: str, entities: list, interviewee, llm,
     tnorm = re.sub(r"\s+", " ", transcript.lower())
 
     def verified(quote):
+        """The quote if it is real transcript text, else "" -- the anti-paraphrase gate.
+
+        Three steps: UNTAG (the model quotes from the tagged window, so `[P3
+        Ronnie]` has to become `Ronnie` again), normalize whitespace, then require
+        the result to appear in the equally-normalized transcript. A quote under 4
+        characters is too short to be evidence of anything. Every claim in this
+        pass has to clear this, so a hallucinated quote takes its claim down with
+        it.
+        """
         # the model quotes from the TAGGED window, so strip `[P# ...]` tags first,
         # then require the (whitespace-normalized) quote to be real transcript text
         if not quote:
@@ -260,6 +363,11 @@ def extract_pass(transcript: str, entities: list, interviewee, llm,
         return q if len(q) >= 4 and q.lower() in tnorm else ""
 
     def names_in(ent, text_lower):
+        """Does this quote mention `ent` by one of its own surface forms?
+
+        Used to check that a relation or alias claim is really ABOUT the pair it
+        names, rather than a verifiable quote attached to the wrong people.
+        """
         # whole-word match so a short name can't ground on a longer one
         # ("ruth" must not match inside "ruthie")
         for f in ent.sorted_mentions:
@@ -365,6 +473,13 @@ def extract_pass(transcript: str, entities: list, interviewee, llm,
     proposals: dict = {}
 
     def propose(e, field, counter):
+        """Turn a vote tally into one proposal, or nothing if no window answered.
+
+        The most-voted value wins. Confidence is "high" when at least two windows
+        independently gave the same answer and "low" for a single vote -- so
+        agreement across separate readings of the transcript is what earns
+        confidence, rather than the model's own self-report.
+        """
         if not counter:
             return
         value, votes = counter.most_common(1)[0]

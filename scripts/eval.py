@@ -1,6 +1,14 @@
 """
-Entry point for the evaluation harness. The implementation lives in
-`evaluation/` -- see that package's docstring for what is scored and why.
+Entry point for the evaluation harness.
+
+PURPOSE
+    A runnable wrapper so the harness can be started without knowing the package
+    layout. All it does is put the repo root on `sys.path` and call
+    `evaluation.cli.main`.
+
+FIT
+    `scripts/` holds runnable entry points ONLY -- the implementation lives in
+    `evaluation/`; see that package's docstring for what is scored and why.
 
     ./venv/bin/python3 scripts/eval.py
 

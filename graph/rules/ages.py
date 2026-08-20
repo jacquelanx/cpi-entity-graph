@@ -1,10 +1,31 @@
 """
-Age parsing and the age <-> date consistency constraint.
+Ages: parse spoken ages, and tie each one to the date it was stated with.
 
-Convert spoken ages to an int ("nineteen", "in his forties", "twenty-something"),
-and record STATED_WITH edges when an age and a date are stated in the same
-sentence ("I was nineteen in 2009") so date-shifting keeps the implied birth
-year arithmetically consistent.
+PURPOSE
+    Two related jobs. `resolve_age_entity` turns an age expression into an integer
+    ("nineteen" -> 19, "in his forties" -> 45, approximate).
+    `age_date_constraints` emits STATED_WITH edges linking an age to the nearby
+    date that dates it.
+
+WHY THE CONSTRAINT MATTERS
+    De-identification shifts dates. If the transcript says "I enlisted in
+    September 2008. I was eighteen", then moving 2008 without moving the implied
+    birth year leaves the two statements contradicting each other -- and a reader
+    who spots the inconsistency learns that a shift was applied and roughly how
+    big it was. The STATED_WITH edge is what tells the shifter these two facts
+    must move together.
+
+FIT
+    `graph/pipeline.run_pipeline` calls `resolve_age_entity` per age entity and
+    `age_date_constraints` once over all entities. `parse_age_value` is re-used by
+    `graph/checks/ages.py`, so the checker re-runs the rule's own arithmetic
+    instead of reimplementing it. Sentence boundaries come from
+    `graph/text/sentences.py`.
+
+NOTE ON GROUPING
+    Age entities are built one-per-MENTION (see `pipeline._simple_entities`), not
+    one per distinct text -- two people who are both "twelve" are two facts, not
+    one.
 """
 
 from __future__ import annotations
@@ -71,11 +92,14 @@ def parse_age_value(text: str) -> tuple[int | None, bool]:
     return (total, False) if found else (None, False)
 
 
-"""
-Used for AGE entities; we want a value to store in `entity.attributes`.
-Thin wrapper over `parse_age_value` so the parser stays reusable by the checkers.
-"""
 def resolve_age_entity(entity: Entity) -> None:
+    """Store the parsed age on the entity, or flag it as unparseable.
+
+    A thin wrapper over `parse_age_value` -- kept thin on purpose, so the parser
+    itself stays a pure function the checkers can re-run. Writes `value`, plus
+    `approximate=True` only when the expression really was vague; a precise age
+    simply has no `approximate` key.
+    """
     value, approximate = parse_age_value(entity.mentions[0].text)
     if value is None:
         entity.flag_entity("could not parse age value")
@@ -85,25 +109,39 @@ def resolve_age_entity(entity: Entity) -> None:
         entity.attributes["approximate"] = True
 
 
-"""
-STATED_WITH edges: an age and the date it was co-stated with must stay
-arithmetically consistent after date-shifting ("I enlisted in September 2008. I
-was eighteen" -> shifting 2008 must move the implied birth year too).
-
-Scoped deliberately: each AGE links to the SINGLE NEAREST date within `window`
-sentences (by character distance), not to every date in range. The old
-"every age x every date in window" produced quadratic, duplicated, and spurious
-links -- e.g. "eighteen" tying to both September 2008 (the real anchor) and a
-nearby "9/11". One age has one temporal anchor, so one edge per age.
-"""
 def age_date_constraints(
     transcript: str, entities: list[Entity], window: int = 1
 ) -> list[Edge]:
+    """Link each age to the one date that dates it, as a STATED_WITH edge.
+
+    An age and the date it was co-stated with must stay arithmetically consistent
+    after date-shifting ("I enlisted in September 2008. I was eighteen" -> shifting
+    2008 must move the implied birth year too).
+
+    HOW: for every age entity, consider every (age mention, date mention) pair
+    whose sentences are within `window` sentences of each other, and keep the pair
+    with the smallest CHARACTER distance. That closest date becomes the age's
+    single anchor, and the containing sentence is stored as the edge's evidence.
+
+    Scoped deliberately: each AGE links to the SINGLE NEAREST date within `window`
+    sentences (by character distance), not to every date in range. The old
+    "every age x every date in window" produced quadratic, duplicated, and spurious
+    links -- e.g. "eighteen" tying to both September 2008 (the real anchor) and a
+    nearby "9/11". One age has one temporal anchor, so one edge per age.
+
+    An age with no date in range gets no edge at all, which is correct: nothing
+    constrains it.
+    """
 
     sentences = sentence_spans(transcript)
 
-    """Return the index of the sentence containing character position `pos`."""
     def sentence_of(pos: int) -> int:
+        """The index of the sentence containing character position `pos`.
+
+        Indices, not offsets, so "within one sentence of each other" is just a
+        subtraction. Defined inside the caller so it closes over `sentences`,
+        which is computed once per transcript.
+        """
         for i, (s, e) in enumerate(sentences):
             if s <= pos < e:
                 return i

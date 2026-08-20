@@ -1,9 +1,23 @@
 """
-Rendering a second-line decision: the action badge, the list of
-deterministic checks that ran, the provenance table, and the review flags.
+Rendering a second-line decision: action badge, checks, provenance table, flags.
 
-This is the part of the report that shows WHY a value is what it is, so it is
-shared by every stage panel that displays an arbitrated field.
+PURPOSE
+    Show WHY a value is what it is. Every arbitrated field carries a `Resolution`
+    (see `graph/second_line/outcomes.py`), and this module turns one into readable
+    HTML: what outcome it reached, which deterministic checks examined it, and what
+    a reviewer still needs to look at.
+
+FIT
+    Sits directly on `primitives.py` and is used by every stage panel that displays
+    an arbitrated field. Reads `graph.second_line.POLICIES` in `_flag_items`, for
+    the list of real field names. Renders records; never re-derives them.
+
+HOW
+    Two presentations of the SAME record -- `_prov_table` for full-width sections
+    and `_prov_list` for narrow cards -- both driven by `_action_badge` and
+    `_checks_html`. The distinction `_checks_html` draws between passed, failed and
+    SKIPPED checks is the point of the whole module: only a passed check means
+    anything was verified.
 """
 
 from __future__ import annotations
@@ -26,6 +40,13 @@ _ACTION = {
 
 
 def _action_badge(res) -> str:
+    """The coloured outcome label for one resolution, plus a BLOCKING mark if set.
+
+    `reject` is split into two visually distinct labels, because the causes are
+    different: "proposal refuted" means a checker did its job, while "both layers
+    blind" means neither the rule nor the model produced anything -- a gap, not a
+    success.
+    """
     if res.action == "reject":
         label, cls = (("proposal refuted", "a-rej") if res.checks_failed
                       else ("both layers blind", "a-blind"))
@@ -60,10 +81,18 @@ def _checks_html(res, quiet=False) -> str:
 
 
 def _prov_of(e) -> dict:
+    """An entity's provenance dict, or `{}` -- tolerant of an entity without one."""
     return getattr(e, "provenance", None) or {}
 
 
 def _prov_table(prov: dict, names=None) -> str:
+    """The decision record as a five-column table: field, outcome, value, source, checks.
+
+    Used in the full-width sections, where columns help compare fields against each
+    other. Pair-shaped fields are keyed `relation:<other_id>` /
+    `same_person:<other_id>`; passing `names` renders those as
+    "relation -> Aunt Maria" instead of showing a raw entity id.
+    """
     rows = []
     for fname, res in prov.items():
         label = fname
@@ -118,6 +147,13 @@ def _prov_list(prov: dict, names=None) -> str:
 
 
 def _prov_details(e, names=None, label="decision record", stacked=False) -> str:
+    """The whole record wrapped in a collapsed `<details>`, with a blocking count.
+
+    Collapsed by default so a page with fifty entities stays readable, and the
+    summary line carries the field count plus any blocking total -- enough to
+    decide whether to open it. `stacked=True` picks the narrow card layout.
+    Returns "" for an entity with no provenance at all.
+    """
     prov = _prov_of(e)
     if not prov:
         return ""
@@ -134,6 +170,17 @@ def _prov_details(e, names=None, label="decision record", stacked=False) -> str:
 # `apply_resolution` starts with "<field>: ", so split only where the next fragment
 # begins with a real policy field name.
 def _flag_items(reason: str) -> list[str]:
+    """Split an accumulated `review_reason` string back into individual flags.
+
+    `Entity.flag_entity` joins reasons with "; ", but the reasons THEMSELVES
+    contain semicolons and colons, so splitting on the separator shreds them. The
+    fix: split only where the text after the separator begins with a real policy
+    FIELD NAME followed by a colon -- because every flag `apply_resolution` writes
+    starts with "<field>: ".
+
+    Field names are sorted longest-first so the alternation prefers the most
+    specific match (e.g. `replace_location` over `replace`).
+    """
     from graph.second_line import POLICIES
     fields = sorted(set(POLICIES) | {"same_person"}, key=len, reverse=True)
     pat = "|".join(re.escape(f) for f in fields)

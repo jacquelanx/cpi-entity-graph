@@ -1,4 +1,26 @@
 """
+Direct identifiers: PHONE, EMAIL, SSN_OR_ID, USERNAME_HANDLE, OCCUPATION.
+
+PURPOSE
+    Turn every detected direct-identifier span into an entity that reaches
+    surrogate generation, typed and normalized so a replacement of the right
+    SHAPE can be minted (a fake 10-digit US phone number for a US phone number,
+    a fake local@domain for an email).
+
+FIT
+    Called once by `graph/pipeline.run_pipeline`, after the person and place
+    stages. Its `COMMON_OCCUPATIONS` table is the rule layer that
+    `graph/checks/identifiers.py` uses to refute the LLM on `identifying`, and
+    ownership of these entities is decided separately by
+    `_link_interviewee_pii` in the pipeline plus `graph/checks/ownership.py`.
+
+HOW
+    Group mentions by (category, lowercased text) so a repeated identifier gets
+    ONE entity and therefore one consistent replacement, then normalize each
+    group by category-specific rules. Parsing failures do not drop the entity --
+    they set a review flag on it, because a dropped identifier is a leak while a
+    flagged one merely needs a human.
+
 Deterministic handling for the direct-identifier types that were previously
 dropped: PHONE, EMAIL, SSN_OR_ID, USERNAME_HANDLE, OCCUPATION.
 
@@ -66,13 +88,39 @@ COMMON_OCCUPATIONS = {
 
 
 def _is_common_occupation(text: str) -> bool:
+    """Is this job title in the "so common it identifies nobody" table?
+
+    Normalizes whitespace, case and trailing punctuation before the lookup, so
+    "Coal  Miner." matches the entry "coal miner".
+    """
     t = re.sub(r"\s+", " ", (text or "").strip().lower()).strip(".,;:")
     return t in COMMON_OCCUPATIONS
 
 
 def _normalize(cat: str, text: str):
-    """Return (subtype, attributes) for one identifier span. `kind` mirrors the
-    category so the surrogate generator knows what shape of fake to mint."""
+    """Type and normalize one identifier span.
+
+    Returns `(subtype, attributes, flag)` -- a narrower subtype than the raw
+    category, the attributes to store, and a review-flag reason or None. `kind`
+    in the attributes mirrors the category so the surrogate generator knows what
+    shape of fake to mint.
+
+    Per category:
+      PHONE     strip to digits; 10 or 11 of them is a US_PHONE (10 digits, or 11
+                with the leading country code "1"), anything else stays generic
+                PHONE. Under 7 digits cannot be a phone number -> flag.
+      EMAIL     split on "@" into local part and domain, both lowercased; a string
+                that does not parse as an address -> flag.
+      SSN_OR_ID a 9-digit NNN-NN-NNNN shape is an SSN, otherwise a generic ID. No
+                digits at all -> flag.
+      USERNAME  strip a leading "@" and lowercase the handle.
+      OCCUPATION store the lowercased job title, and fill `identifying=False` when
+                the job is on the common list. An UNCOMMON job is left unset
+                rather than True, so the LLM proposes and the checkers gate it.
+
+    The entity is never rejected -- a flag routes it to a human while the span
+    still gets redacted.
+    """
     t = text.strip()
     attrs = {"kind": cat, "replace": True}
     subtype, flag = cat, None
@@ -106,8 +154,17 @@ def _normalize(cat: str, text: str):
 
 
 def build_identifier_entities(transcript_id: str, mentions: list) -> list[Entity]:
-    """One entity per distinct (category, lowercased text) so repeated identical
-    identifiers cluster and get replaced consistently."""
+    """Build one entity per distinct identifier, deduping repeats.
+
+    Grouping by (category, lowercased text) is what makes a phone number quoted
+    twice in an interview become ONE entity, and therefore receive ONE
+    replacement -- two different fake numbers for the same real one would leak the
+    fact that they were the same.
+
+    Entities are numbered by first appearance in the transcript
+    (`..._ID001`, `_ID002`, ...) so ids are stable across runs, and the first
+    mention's text is the one normalized for the whole group.
+    """
     groups: dict[tuple, list] = {}
     for m in mentions:
         if m.entity_type in ID_CATS:

@@ -1,9 +1,35 @@
 """
-Assembles the networkx graph and serializes it to the ARTIFACT that the
+Output boundary: assemble the networkx graph and write the ARTIFACT that the
 surrogate-generation stage consumes.
 
-`serialize` used to emit entities and edges alone, and nothing ever called it. Four
-things the pipeline computes and then dropped on the floor:
+PURPOSE
+    Two related jobs. `build_nx_graph` / `location_chain` turn the flat
+    (entities, edges) lists into a real graph so callers can WALK it -- notably
+    following LOCATED_IN upward to get a place's full hierarchy.
+    `build_payload` / `validate_payload` / `serialize` produce the on-disk JSON
+    artifact, and refuse to emit or accept one that cannot be trusted.
+
+FIT
+    Last stage in the flow, and the mirror image of `graph/loader.py`: loader
+    checks the contract coming IN from detection, this checks the contract going
+    OUT to surrogate generation. Called by `scripts/build_graph.py` (writes
+    `out/graphs/<id>.json`), by `demo/render/stages_graph.py` (renders the graph
+    in the HTML reports) and by `tests/test_invariants.py`. Depends on
+    `graph/models.py` for the dataclasses and on `graph/loader.Violation` so both
+    boundaries raise the same error type.
+
+HOW
+    The artifact is a plain dict, versioned by `GRAPH_VERSION`, and every
+    guarantee it makes is re-derived from the transcript at validation time
+    rather than trusted. `validate_payload` is the interesting part: it checks
+    referential integrity (no edge or blocking row may point at an entity that
+    is not present), the presence of the interviewee node, and -- when given the
+    transcript -- that the source hash and every single mention offset still
+    agree with the text. See "the digest" below for why that last check exists.
+
+WHY THE EXTRA FIELDS
+    `serialize` used to emit entities and edges alone, and nothing ever called it. Four
+    things the pipeline computes and then dropped on the floor:
 
   * `blocking` -- the (entity, field, reason) rows the second line could not settle.
     This is the "do NOT mint surrogates yet, a human must decide" signal, and it is
@@ -14,7 +40,7 @@ things the pipeline computes and then dropped on the floor:
     entirely off this one node.
   * whether an LLM touched the output, and which one.
 
-And one thing nobody computed: A HASH OF THE SOURCE TEXT. Every mention is a pair of
+And one thing nobody computed -- THE DIGEST: A HASH OF THE SOURCE TEXT. Every mention is a pair of
 character offsets, so the artifact is meaningless -- worse, silently wrong -- against
 any text but the exact bytes it was built from. A re-transcription, a re-encoding or a
 stripped BOM shifts every offset, and the surrogate stage would splice at the wrong
@@ -45,6 +71,20 @@ GRAPH_VERSION = "0.2"
 
 
 def build_nx_graph(entities: list[Entity], edges: list[Edge]) -> nx.MultiDiGraph:
+    """Load the flat entity/edge lists into a networkx graph so they can be walked.
+
+    A `MultiDiGraph` is directed (RELATED_TO "aunt" runs one way) and MULTI, i.e.
+    it permits several distinct edges between the same pair of nodes -- which is
+    required here, because two entities can legitimately be linked more than once
+    (a person can be both RELATED_TO and the ATTRIBUTE_OF target of an
+    identifier, and even two RELATED_TO edges with different `detail` are
+    meaningful).
+
+    Node and edge attributes are copied across so a walker never has to look
+    anything up in the original lists. Note `attributes=e.attributes` shares the
+    same dict object rather than copying it, so mutating an entity after building
+    the graph is visible through the graph too.
+    """
     g = nx.MultiDiGraph()
     for e in entities:
         g.add_node(e.entity_id, category=e.category, subtype=e.subtype,
@@ -56,10 +96,24 @@ def build_nx_graph(entities: list[Entity], edges: list[Edge]) -> nx.MultiDiGraph
     return g
 
 
-"""
-Walk LOCATED_IN upward: street -> neighborhood -> city -> ...
-"""
 def location_chain(g: nx.MultiDiGraph, entity_id: str) -> list[str]:
+    """Walk LOCATED_IN edges upward and return the containment chain, innermost first.
+
+    For a graph holding "Ninth Ward" -> "New Orleans" -> "Louisiana", asking about
+    the Ninth Ward returns all three ids in that order. Surrogate generation needs
+    this so a fake place substitution stays internally consistent: if the city
+    becomes a different city, the neighbourhood inside it has to move with it.
+
+    HOW: start at `entity_id` and repeatedly look for an outgoing LOCATED_IN edge,
+    stepping to its target each time, until there is none left. When a node has
+    several parents (a gazetteer can offer more than one) it takes the first --
+    arbitrary but deterministic given a fixed input order.
+
+    The `current in chain` test is a CYCLE GUARD. A malformed gazetteer row could
+    make A contained in B while B is contained in A, and following that blindly
+    would loop forever; detecting a node we have already visited stops the walk
+    and returns what was found so far.
+    """
     chain = [entity_id]
     current = entity_id
 
@@ -82,11 +136,23 @@ def location_chain(g: nx.MultiDiGraph, entity_id: str) -> list[str]:
 # ------------------------------------------------------------------ the artifact
 
 def source_digest(transcript: str) -> str:
-    """The hash every offset in this artifact is relative to."""
+    """SHA-256 of the transcript: the fingerprint every offset is relative to.
+
+    A hex digest of the exact UTF-8 bytes. Two texts that differ by even one
+    character -- a re-transcription, a stripped byte-order mark, CRLF instead of
+    LF -- produce completely different digests, which is what lets
+    `validate_payload` tell "the same interview" from "the same bytes". `or ""`
+    keeps a `None` transcript hashable so callers can validate structure alone.
+    """
     return hashlib.sha256((transcript or "").encode("utf-8")).hexdigest()
 
 
 def _name(ent, interviewee=None) -> str:
+    """A human-readable label for an entity, for review rows a person will read.
+
+    Prefers the longest surface form the transcript actually used ("Aunt Maria").
+    Falls back to the entity id, except for the interviewee -- see below.
+    """
     forms = getattr(ent, "sorted_mentions", None) or []
     if forms:
         return forms[0]
@@ -100,7 +166,17 @@ def _name(ent, interviewee=None) -> str:
 
 def build_payload(transcript_id: str, transcript: str, entities: list[Entity],
                   edges: list[Edge], info: dict) -> dict:
-    """The artifact, as a plain dict. `info` is `run_pipeline`'s third return value."""
+    """Build the artifact as a plain dict, ready to validate and write.
+
+    `info` is `run_pipeline`'s third return value -- the bag holding the
+    interviewee node, the interview date, whether coref/LLM ran, and the blocking
+    rows. Everything this function emits beyond `entities`/`edges` comes from
+    there; see the module docstring for why each field is worth carrying.
+
+    The one piece of real work is reshaping `info["blocking"]` from bare
+    `(entity_id, field, reason)` tuples into dicts that also carry the entity's
+    display name, resolved through the `by_id` index built at the top.
+    """
     interviewee = info.get("interviewee")
     by_id = {e.entity_id: e for e in entities}
 
@@ -144,6 +220,7 @@ def validate_payload(payload: dict, transcript: str | None = None) -> dict:
     against a text that merely LOOKS like the one this was built from.
     """
     def need(cond, msg):
+        """Assert an artifact invariant; raise `Violation(msg)` if it does not hold."""
         if not cond:
             raise Violation(msg)
 

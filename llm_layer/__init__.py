@@ -1,6 +1,27 @@
 """
 Optional local-LLM layer. It PROPOSES; `graph.second_line` ARBITRATES.
 
+PURPOSE
+    Ask a local language model the same questions the rule tables in `graph/` try
+    to answer, for EVERY entity -- whether or not the rule found a value -- and
+    return the answers as plain data. Nothing here decides anything.
+
+FIT
+    A leaf package with a strictly ONE-WAY dependency: `graph` imports
+    `llm_layer`, never the reverse. That is enforced by the interface -- proposals
+    are plain dicts of the shape below, so this package needs no knowledge of
+    `Entity`, `Resolution` or the checkers. `graph/pipeline.run_pipeline` calls the
+    three passes; `graph/rules/coref.py` and `graph/rules/name_matching.py` call
+    the merge adjudicator directly.
+
+HOW
+    `client.py` holds one Ollama client with a persistent, privacy-preserving
+    cache; the four task modules each build a prompt, call `client.judge`, and
+    normalize the reply. Every call runs at temperature 0 with JSON-constrained
+    output, so the same transcript yields the same proposals. If Ollama is not
+    running the whole layer degrades to returning nothing and the pipeline is
+    rules-only.
+
 Every rule table and parser in `graph/` can miss, so this layer asks the model the
 same questions the tables answer -- for every entity, whether or not the rule
 filled the field -- and returns plain dicts:

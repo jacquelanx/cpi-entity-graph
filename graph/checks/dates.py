@@ -2,6 +2,25 @@
 Deterministic checkers for DATE fields (`resolved_value`, `shiftable`,
 `replace_date`).
 
+PURPOSE
+    Three separate questions about a date. WHAT date is it (`resolved_value`)?
+    May it be moved by the date-shifter (`shiftable`)? May its surface text
+    survive verbatim (`replace_date`)?
+
+FIT
+    Named by the `resolved_value`, `shiftable` and `replace_date` policies in
+    `graph/second_line/policies.py`. The rule side is `rules/dates.py`, whose
+    `ANCHOR_EVENTS` table and `_strip_article` helper are imported here.
+    `anchor_phrase_for` is the shared table lookup, also used by
+    `checks/approximate.py`.
+
+HOW
+    Value checks are bounds and arithmetic: a real ISO date, a plausible year, not
+    after the interview, a lifespan-plausible DOB, no invented precision, and no
+    contradiction of the anchor table. The two directives are gated ASYMMETRICALLY
+    -- pinning a date as non-shiftable requires corroboration, and keeping its text
+    requires more corroboration still, because keeping is the direction that leaks.
+
 The rule layer parses with dateutil, a relative-date regex set, and the
 `ANCHOR_EVENTS` table. When a rule misses and the LLM fills the gap, these
 checkers bound the guess: it must be a real ISO date, it must not sit after the
@@ -66,6 +85,12 @@ def anchor_phrase_for(text: str) -> str:
 
 
 def iso_valid(value, ctx) -> CheckOutcome:
+    """The value must be a real ISO date in a plausible year.
+
+    Two failure modes: unparseable text, and a syntactically fine date from an
+    implausible year. The upper bound is next year rather than today, to tolerate
+    an interview recorded near a year boundary.
+    """
     name = "iso_valid"
     d = parse_iso(value)
     if d is None:

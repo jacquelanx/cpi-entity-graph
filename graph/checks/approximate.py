@@ -1,6 +1,24 @@
 """
 Deterministic checkers for `approximate` -- is this age / date an estimate?
 
+PURPOSE
+    Decide whether a resolved age or date is exact or a best guess. Downstream
+    this changes how much a value may be perturbed, and it changes what a reviewer
+    is being told: presenting an estimate as exact is a quiet accuracy claim
+    nothing supports.
+
+FIT
+    Named by the `approximate` policy in `graph/second_line/policies.py`. Reads
+    `rules/ages.parse_age_value` and the anchor table via `checks/dates.py`, so
+    every "is this vague?" judgment traces back to one implementation.
+
+HOW
+    The answer is written in the source text, so each checker looks at the SPAN
+    and its immediate surroundings. `_hedged` is the shared primitive: a vagueness
+    marker inside the span, or a qualifier in the ~20 characters before it. Each
+    checker then guards one direction for one category and returns `na` outside
+    it, so nothing is counted as verified that was not actually inspected.
+
 `approximate` was the ONE policy in the registry with `checkers=()`. It has both
 layers (the rule's own marker, and an LLM proposal on every age and date), so it
 looked second-lined, but an LLM fill was accepted with the reason literally "NO
@@ -53,12 +71,21 @@ _DATE_CATS = ("DATE_ABSOLUTE", "DATE_RELATIVE", "DATE_ANCHOR", "DATE_OF_BIRTH")
 
 
 def _span_text(ctx) -> str:
+    """The literal text of the span under judgment, or "" if there is none."""
     m = ctx.first_mention()
     return m.text if m is not None else ""
 
 
 def _hedged(ctx) -> bool:
-    """A vagueness marker inside the span, or a qualifier immediately before it."""
+    """A vagueness marker inside the span, or a qualifier immediately before it.
+
+    Two places to look, because English hedges in two ways. INSIDE the span:
+    "thirty-odd", "forty-something", "her eighties". IMMEDIATELY BEFORE it: "I was
+    maybe nineteen" -- the number itself is exact-looking, and only the preceding
+    word makes it an estimate. The lookback is capped at `_LEFT_WINDOW` characters
+    so a hedge attached to a DIFFERENT number earlier in the sentence cannot be
+    misread as this one's.
+    """
     m = ctx.first_mention()
     if m is None:
         return False

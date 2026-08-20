@@ -1,10 +1,43 @@
 """
 The per-transcript walk: `resolve_all`.
 
-Decides which fields apply to each entity (`_fields_for`), reads what the rule
-layer already put there (`_rule_value`), drives `second_line` over every field,
-every proposed relation and every proposed merge, applies the results, and
-reports what still blocks surrogate generation (`blocking_fields`).
+PURPOSE
+    Drive the arbitration over one whole transcript. Decides which fields apply to
+    each entity (`_fields_for`), reads what the rule layer already put there
+    (`_rule_value`), calls `engine.second_line` for every field / relation /
+    merge, applies the results, turns accepted proposals into real EDGES, and
+    reports what still blocks surrogate generation (`blocking_fields`).
+
+FIT
+    The top of this package: `graph/pipeline.run_pipeline` calls `resolve_all`
+    once, and everything it returns (the ledger, the new edges, the blocking list)
+    flows into `graph/serialize.py`. Depends on every other module here plus
+    `graph/checks/`.
+
+HOW -- ORDER, which is most of the content
+    1. `interviewee_identity` is threaded in from the early resolution done in
+       `graph/rules/interviewee.py` (the merge had to happen before kinship ran),
+       so it still gets a ledger row.
+    2. RELATIONS first, because they populate `ctx.kin_ids` and the kin-derived
+       FAMILY subtype -- both of which later checkers read.
+    3. SAME-PERSON claims next: after relations (so a kinship-derived gender is
+       available to `genders_do_not_conflict`), before the per-entity loop (so a
+       merge flag is on the entity before its own fields are resolved).
+    4. THE PER-ENTITY LOOP, field by field in the order `_fields_for` returns --
+       which matters, because a later field's checkers may read the value an
+       earlier one settled.
+    5. `_cross_field_consistency`, for the checks that span two resolved fields.
+
+    Two themes recur through the loop and are worth knowing before reading it:
+
+    * EDGE SYMMETRY. Rule stages write edges BEFORE arbitration, so a refuted
+      value must also drop its edge (`_drop_edges`), and an accepted LLM value must
+      CREATE one. Otherwise a consumer walking edges sees a claim the attributes no
+      longer make, or misses one they do.
+    * TIER PROMOTION. A few policies are tightened per entity rather than in the
+      registry -- ownership of the speaker's own quasi-identifiers becomes
+      REQUIRED_VERIFIED, and `resolved_value` gets a per-category date tolerance --
+      via `dataclasses.replace` on a copy of the policy.
 """
 
 from __future__ import annotations
@@ -46,6 +79,27 @@ _OWNER_VERIFIED_CATS = ("PHONE", "EMAIL", "SSN_OR_ID", "USERNAME_HANDLE",
 
 
 def _rule_value(ent, policy: FieldPolicy, ctx):
+    """What the RULE layer says about this field for this entity.
+
+    Usually just `ent.attributes[attr]`, but five fields are special because their
+    rule value is COMPUTED at arbitration time rather than read off the entity:
+
+      `replace_location`  recomputed from the CURRENT subtype, because the rule
+                          stage ran before the second line typed off-gazetteer
+                          places.
+      `replace_date`      a pure function of the resolved `shiftable`.
+      `replace_age`       a pure function of the `value` Resolution -- keep only a
+                          span a checker proved is not an age.
+      `kind`              the detector's category, but only when the rule's own
+                          normalizer accepts the span under it; a malformed span
+                          returns None so the FILL path opens and the LLM can
+                          re-type it.
+      `stated_with`       lives on the STATED_WITH edge, not in `attributes`, so it
+                          is read back off the edge.
+
+    Each of these depends on a field resolved EARLIER in `_fields_for`'s ordering;
+    the per-field comments below say which and why.
+    """
     attr = policy.attr or policy.field
     if policy.field == "replace_location":
         # Recomputed from the CURRENT subtype rather than read from the attribute.
@@ -162,6 +216,25 @@ def _fields_for(ent, interviewee) -> list[str]:
 def _resolve_relations(ctx, edges, ledger, relation_proposals, llm_ran):
     """Arbitrate RELATED_TO pairs, then let the deterministic kin rule run again.
 
+    Returns the new edges that verified proposals earned.
+
+    HOW: index the existing rule edges and the LLM proposals by `(source, target)`,
+    then iterate over the UNION of both key sets -- so a pair either layer
+    mentioned gets a decision. For each pair the relation rides on `ctx.pair` and
+    `ctx.entity` is pointed at one end, because a checker needs an entity to hang
+    off. Then:
+
+      FILL   -> build a real edge from the verifier's CANONICALIZED verdict
+                (`v.source`/`v.target`/`v.detail`), not from the raw proposal.
+      REJECT -> if the verdict was merely `suggest` (plausible but not locally
+                provable) the claim is recorded on the named person as a review
+                flag; a genuinely refuted one is dropped silently.
+
+    Finally, with the relation set complete, the deterministic FAMILY rule is
+    re-applied: anyone tied by a KIN relation and not already typed becomes FAMILY.
+    That has to happen here rather than in `rules/attributes.py`, because relations
+    the second line ADDED did not exist when that stage ran.
+
     Resolved per PAIR: the rule value is the detail of the kinship edge the rules
     already produced for that pair, the LLM value is the raw proposal, and the
     checker is the verifier in `graph/checks/relation_evidence.py`. Runs BEFORE the
@@ -242,6 +315,20 @@ def _resolve_relations(ctx, edges, ledger, relation_proposals, llm_ran):
 
 def _resolve_merges(ctx, merge_records, ledger, llm_ran) -> None:
     """Arbitrate same-person (alias / nickname / coref) claims.
+
+    HOW: group the records by pair, so the rule's claim and the LLM's answer about
+    the same two entities are arbitrated together as one field. Then per pair, the
+    outcome decides what the reviewer is told:
+
+      applied merge, checkers REFUTED it  -> say so loudly. Nothing here can
+            un-merge (the fold happened back in `aliases`/`coref`), so the honest
+            move is a flag naming the failing checks.
+      FILL (a proposal the rules did not make, that cleared the checkers)
+            -> write `suggested_merge_with` on both sides and flag for review.
+      REJECT with failures -> note that a suggestion was refuted and the two were
+            kept separate.
+      CONFLICT with an LLM `False` -> a VETO: the rules wanted the merge and the
+            model refused; the safe direction kept them apart.
 
     `merge_records` is a list of plain dicts, one per CLAIMED pair:
 
@@ -357,6 +444,11 @@ def resolve_all(transcript, entities, edges, interviewee, proposals, *,
     Returns a ledger: `{entity_id: {field: Resolution}}`. New edges that checked
     proposals earned -- RELATED_TO, LOCATED_IN, ATTRIBUTE_OF, STATED_WITH -- come
     back under the `_edges` key.
+
+    Entities and `edges` are modified IN PLACE (values written, refuted values and
+    their edges erased), so the caller sees the arbitrated graph in the same lists
+    it passed in. See the module docstring for the stage order and the two
+    recurring themes -- edge symmetry and tier promotion.
     """
     ctx = CheckContext(transcript=transcript, entities=entities, edges=edges,
                        interviewee=interviewee, interview_date=interview_date,
@@ -575,7 +667,12 @@ def _cross_field_consistency(entities, ledger) -> None:
 
 
 def blocking_fields(ledger: dict) -> list[tuple[str, str, str]]:
-    """(entity_id, field, reason) for every resolution that blocks the transcript."""
+    """(entity_id, field, reason) for every resolution that blocks the transcript.
+
+    THE REVIEW GATE, flattened out of the ledger for the artifact. A non-empty
+    result means a human must settle something before surrogates are minted. The
+    `_edges` key is skipped -- it holds edges, not resolutions.
+    """
     out = []
     for eid, fields in ledger.items():
         if eid == "_edges":

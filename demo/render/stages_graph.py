@@ -1,6 +1,21 @@
 """
-Panels for the finished artifact: the entity-graph SVG, the
-edge table, the full decision ledger, and the serialized payload.
+Panels 10-12: the entity-graph SVG, the edge table, the ledger, the artifact.
+
+PURPOSE
+    Render the finished product: a drawing of the relationship graph, every edge as
+    a table, the complete arbitration ledger, and the serialized JSON payload a
+    consumer would actually receive.
+
+FIT
+    Sits on `primitives.py` and `provenance.py`; assembled by
+    `page.transcript_panel`. `stage_artifact` calls into `graph/serialize.py` to
+    build and validate the real payload, so the page shows what would be written
+    rather than a reconstruction.
+
+HOW
+    The SVG is laid out by hand (see `_graph_svg`) rather than by a graph library,
+    since the shape being drawn is always the same: the interviewee at the centre,
+    their direct relations around them, and anyone else hanging off those.
 """
 
 from __future__ import annotations
@@ -13,6 +28,23 @@ from .provenance import _ACTION, _checks_html
 
 # ---------- 10 · graph ----------
 def _graph_svg(case) -> str:
+    """Draw the RELATED_TO graph as an SVG, centred on the interviewee.
+
+    Hand-rolled layout in three tiers, which is possible because the graph always
+    has the same shape -- a speaker, the people they are directly related to, and
+    people related to those:
+
+      * the INTERVIEWEE is the centre, labelled "You";
+      * `level1` is everyone with a direct edge to them, placed around the centre,
+        each captioned with the relation word from `cap`;
+      * anyone else is attached to whichever placed node they connect to
+        (`parent_of`).
+
+    `adj` is an undirected adjacency map (each edge recorded in both directions),
+    because "is this person connected to the speaker?" does not care which way the
+    edge points. Returns a short message instead of an SVG when there are no
+    relations to draw.
+    """
     ents = {e.entity_id: e for e in case["entities"]}
     iv = case["info"]["interviewee"].entity_id
     rel = [(x.source, x.target, x.detail) for x in case["edges"]
@@ -26,6 +58,7 @@ def _graph_svg(case) -> str:
         adj.setdefault(t, []).append(s)
 
     def disp(nid):
+        """Node label: "You" for the interviewee, otherwise the person's name."""
         return "You" if nid == iv else (_pname(ents[nid]) if nid in ents else nid)
 
     level1 = sorted([n for n in nodes if n != iv and iv in adj.get(n, [])], key=disp)
@@ -120,6 +153,7 @@ _REL_HELP = {
 
 
 def _edge_table(case) -> str:
+    """Every edge in the graph as a table: relation, both ends, detail, evidence."""
     """EVERY edge, of all four relation types. The SVG shows the family graph
     because that is the readable part; this is the rest of the graph."""
     names = _names_map(case)
@@ -146,6 +180,7 @@ def _edge_table(case) -> str:
 
 
 def stage_graph(case) -> str:
+    """Panel 10: the relationship graph drawing, followed by the full edge table."""
     body = (f"<div class='graph'>{_graph_svg(case)}{_GRAPH_LEGEND}</div>"
             + _edge_table(case))
     return section("10", "Entity graph", body,
@@ -156,6 +191,12 @@ def stage_graph(case) -> str:
 
 # ---------- 11 · the full ledger ----------
 def stage_ledger(case) -> str:
+    """Panel 11: the complete arbitration ledger -- every field decision on every entity.
+
+    The audit view. Rows are grouped by entity and each shows the outcome, the
+    value, which layer it came from and which deterministic checks ran, so a
+    reader can answer "why is this field what it is?" without reading any code.
+    """
     """Every field resolution on every entity, grouped by outcome.
 
     This is the "nothing is hidden" view. The stages above choose what to foreground;
@@ -235,6 +276,12 @@ def stage_ledger(case) -> str:
 
 # ---------- 12 · the artifact ----------
 def stage_artifact(case) -> str:
+    """Panel 12: the serialized JSON artifact a downstream consumer would receive.
+
+    Built through `graph/serialize.py` -- the real writer, including its validation
+    -- so the page shows the actual payload rather than a reconstruction of it,
+    and a validation failure surfaces here rather than downstream.
+    """
     """What actually gets written to disk for the surrogate-generation stage."""
     from graph.serialize import build_payload
 

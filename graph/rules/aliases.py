@@ -1,6 +1,26 @@
 """
-Explicit alias / nickname resolution by RULE -- part of clustering, independent
-of coref. Oral-history transcripts introduce nicknames with a small, CLOSED, and
+Clustering, part 2: explicit alias / nickname resolution by RULE.
+
+PURPOSE
+    Merge a person's nickname into their main entity when the transcript SAYS
+    they are the same -- "everybody just called her Glo". This is the one
+    clustering path that can join two names sharing no letters at all.
+
+FIT
+    Runs between `rules/name_matching.py` (part 1, name similarity) and
+    `rules/coref.py` (part 3, the ML model), called once from
+    `graph/pipeline.run_pipeline`. Imports `KINSHIP_GENDER` and `_entity_at` from
+    `rules/kinship.py` to read gender off an adjacent kin word and to map a text
+    span back to the entity covering it. Its return value feeds
+    `graph/second_line`, which arbitrates each merge.
+
+HOW
+    Five case-sensitive regexes for a closed set of English alias constructions,
+    plus a conservative antecedent search for the cues whose subject is a pronoun.
+    The regexes are built up from small named pieces (`_NAME`, `_SUBJ`, `_Q` for
+    an optional quote) so each cue pattern stays readable.
+
+Oral-history transcripts introduce nicknames with a small, CLOSED, and
 distinctive set of constructions:
 
   "we called Roberto Beto"          call(ed) <name> <alias>
@@ -64,7 +84,17 @@ _WORD_BEFORE = re.compile(r"([A-Za-z][\w'’-]*)[\s,]+$")
 
 
 def _local_gender(transcript: str, m) -> str | None:
-    """Gender implied by a kinship word right before a mention ('my father James')."""
+    """Gender implied by a kinship word right before a mention ("my father James").
+
+    Looks at the 24 characters preceding the mention, takes the last word, and
+    looks it up in the kin-word gender table -- so "father" gives "M", "aunt"
+    gives "F", and anything else gives None.
+
+    This exists because alias resolution runs BEFORE attribute inference, so no
+    entity has a `gender` attribute yet. A kin word beside a name is the one
+    gender signal already available in the raw text, and it is enough to stop a
+    "him" cue binding to a woman mentioned just before.
+    """
     w = _WORD_BEFORE.search(transcript[max(0, m.start - 24):m.start])
     if w:
         return KINSHIP_GENDER.get(w.group(1).lower().replace(".", ""))
@@ -72,6 +102,14 @@ def _local_gender(transcript: str, m) -> str | None:
 
 
 def _intervening_person(transcript: str, a: int, b: int) -> bool:
+    """True if a FRESH person reference appears in the text between offsets a and b.
+
+    Guards pronoun binding. In "I have a brother too, we call him Chip", the
+    nearest previously-mentioned person might be a nephew named earlier, but "a
+    brother" sits in between and is who "him" actually refers to. Detecting any
+    "a/my/their <person noun>" in the gap is enough to make the search abstain
+    rather than merge Chip into the wrong entity.
+    """
     return a < b and bool(_NEW_PERSON.search(transcript[a:b]))
 
 
@@ -89,6 +127,17 @@ def _nearest_person(transcript, persons, pos: int, want_gender, exclude=None):
     stayed split -- the single clustering split in the sample transcripts, which no
     later layer can repair because `same_person` never auto-merges. Excluding the alias
     lets the search reach Minh.
+
+    HOW: build every candidate mention that ENDS at or before `pos`, sorted by how
+    far back it is, then walk outward from `pos` and take the first that survives
+    three filters -- within 140 characters (beyond that the link is too weak to
+    trust), gender-compatible with the pronoun if the pronoun has one, and with no
+    fresh person reference intervening. An intervening referent returns None
+    outright rather than continuing further back, because a nearer candidate
+    losing to a closer competitor means the pronoun is simply not ours to bind.
+
+    `want_gender` of None (from "they"/"their", or from the implicit-subject cues)
+    skips the gender filter entirely.
     """
     ex = getattr(exclude, "entity_id", None)
     cands = sorted(
@@ -108,6 +157,14 @@ def _nearest_person(transcript, persons, pos: int, want_gender, exclude=None):
 
 
 def _merge(base, other, persons) -> None:
+    """Fold entity `other` into `base` in place and drop it from the person list.
+
+    `base` absorbs the other's mentions (re-sorted into transcript order) and any
+    of its non-None attributes; a review flag on the folded side is carried over
+    so a concern raised about it is not lost with the entity. The caller keeps a
+    reference to `other` in its merge record, because the `same_person` checkers
+    later need to see both sides of a pair that no longer both exist.
+    """
     base.mentions.extend(other.mentions)
     base.mentions.sort(key=lambda m: m.start)
     base.attributes.update({k: v for k, v in other.attributes.items() if v is not None})
@@ -137,12 +194,25 @@ def apply_alias_cues(transcript: str, persons: list) -> list[dict]:
         return merged
 
     def subject_entity(subj, s, e, alias_ent=None):
+        """The entity a cue's SUBJECT group refers to.
+
+        Two shapes: a pronoun ("called HER Glo") needs an antecedent search, while
+        a literal name ("called ROBERTO Beto") just needs the entity covering that
+        span.
+        """
         if subj.lower() in _PRON_GENDER:
             return _nearest_person(transcript, persons, s, _PRON_GENDER[subj.lower()],
                                    exclude=alias_ent)
         return _entity_at(persons, s, e)
 
     def do(primary, alias_ent, evidence):
+        """Apply one alias merge, recording it, unless the pair is unusable.
+
+        Bails out when either side is unresolved or when both sides resolved to
+        the SAME entity (nothing to merge). The record is built BEFORE `_merge`
+        runs, because `_merge` removes the folded entity from `persons` and the
+        record has to capture it while it is still there.
+        """
         if primary is None or alias_ent is None or primary is alias_ent:
             return
         rec = {"a": primary.entity_id, "b": alias_ent.entity_id,

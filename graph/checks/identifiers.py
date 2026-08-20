@@ -2,6 +2,27 @@
 Deterministic checkers for identifier `kind`, the normalized sub-attributes
 (`digits`, `local`, `domain`, `handle`, `occupation`), and `identifying`.
 
+PURPOSE
+    Verify what the LLM says a span IS ("that's a phone number") and whether a
+    job title is rare enough to single somebody out (`identifying`). Also
+    regenerate the derived sub-attributes so an accepted `kind` actually changes
+    the entity.
+
+FIT
+    Named by the `kind` and `identifying` policies in
+    `graph/second_line/policies.py`; the proposer is
+    `llm_layer/identifier_judge.py`. `canon_kind` is also imported by
+    `checks/comparators.id_kind`, so the two vocabularies stay reconciled in one
+    place.
+
+HOW -- the rule parser IS the checker
+    Rather than describing what a phone number looks like a second time, the
+    checker re-runs `rules/identifiers._normalize` under the CLAIMED category and
+    fails if that parser rejects the span. AGE and DATE_OF_BIRTH -- which
+    `_normalize` does not own -- are verified by `rules/ages.parse_age_value` and
+    `rules/dates.parse_absolute_date` instead. One parser per kind of value, used
+    by both layers.
+
 The rule layer's own parsers ARE the checkers: if the model claims a span is a
 phone, the span must normalize as a phone. Re-running `identifiers._normalize`
 under the claimed category is therefore a complete, deterministic verification.
@@ -36,7 +57,14 @@ _NORMALIZABLE = ("PHONE", "EMAIL", "SSN_OR_ID", "USERNAME_HANDLE", "OCCUPATION")
 
 def canon_kind(value) -> str | None:
     """The category a `kind` value denotes, whether it arrived as the model's word
-    ('ssn') or as an entity category ('SSN_OR_ID'). None when unrecognized."""
+    ('ssn') or as an entity category ('SSN_OR_ID'). None when unrecognized.
+
+    The two layers speak different vocabularies -- the rule side stores an entity
+    CATEGORY, the model answers with a lowercase word -- and several words map to
+    one category ("id" and "ssn" both mean SSN_OR_ID). Normalizing both onto the
+    category makes them comparable. Tries the category form first (already
+    canonical), then the word table.
+    """
     s = str(value or "").strip()
     if not s:
         return None
@@ -46,6 +74,11 @@ def canon_kind(value) -> str | None:
 
 
 def kind_is_known(value, ctx) -> CheckOutcome:
+    """The claimed kind must be one this pipeline actually emits.
+
+    A kind outside the closed set cannot be verified or acted on, so it is
+    refused outright rather than passed through.
+    """
     name = "kind_is_known"
     if canon_kind(value) is None:
         return fail(name, f"kind {value!r} is not a category this pipeline emits")
@@ -53,7 +86,17 @@ def kind_is_known(value, ctx) -> CheckOutcome:
 
 
 def kind_renormalizes(value, ctx) -> CheckOutcome:
-    """Re-type the span under the claimed kind; the rule parsers must accept it."""
+    """Re-type the span under the claimed kind; the rule parsers must accept it.
+
+    The substantive check. If the model says "phone", the characters had better
+    parse as a phone number. Three routes by category:
+
+      AGE            `parse_age_value` must read it, and the result must fall in
+                     0..115.
+      DATE_OF_BIRTH  `parse_absolute_date` must read it AND find an explicit year
+                     -- a birth date with a defaulted year is not usable as one.
+      everything else  `_normalize` must return no failure flag.
+    """
     name = "kind_renormalizes"
     cat = canon_kind(value)
     if cat is None:
@@ -114,7 +157,12 @@ def renormalized_attrs(kind: str, ctx) -> dict:
 def identifying_only_for_occupation(value, ctx) -> CheckOutcome:
     """`identifying` is a judgment about how rare a JOB TITLE is. It says nothing
     about a phone number or an email -- those are identifying by construction and
-    are always replaced -- so a claim on any other category is out of scope."""
+    are always replaced -- so a claim on any other category is out of scope.
+
+    Note the asymmetry: only `identifying=True` is inspected. A False claim, or a
+    missing one, is `na` -- the field only ever adds a review signal, so there is
+    nothing to refute in its absence.
+    """
     name = "identifying_only_for_occupation"
     if value is not True:
         return na(name, "not an identifying claim")

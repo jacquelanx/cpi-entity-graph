@@ -1,6 +1,23 @@
 """
 LLM proposer for `interviewee_identity`: which named person is the SPEAKER?
 
+PURPOSE
+    Nominate one of the detected people as the interviewee, or decline. Returns
+    the `{"value": entity_id, "confidence": ...}` shape `graph.second_line`
+    arbitrates -- so, like the rest of `llm_layer`, this imports nothing from
+    `graph`.
+
+FIT
+    Called by `graph/rules/interviewee.resolve_interviewee_identity` as step 2 of
+    that field's four steps, and gated hard by `graph/checks/interviewee.py`.
+
+HOW
+    A ROSTER prompt. Each detected person is given a short handle (P1, P2, ...)
+    and the model answers with one handle or an empty string -- which is far more
+    robust than asking it to echo a name back. The transcript excerpt keeps both
+    ENDS of the interview, with speaker labels intact, because introductions and
+    sign-offs (the two places a subject actually gets named) cluster there.
+
 The rule layer (`graph/rules/interviewee.py`) reads three closed constructions -- the
 speaker's turn label, a first-person self-introduction, an interviewer's address.
 Those are high precision but far from complete: a subject can be named once, in
@@ -50,6 +67,13 @@ _SYS = (
 
 
 def _excerpt(transcript: str) -> str:
+    """The head and tail of the transcript, with the middle elided if it is long.
+
+    A short transcript is returned whole. A long one becomes
+    `head + "[... middle omitted ...]" + tail`, keeping the two regions where a
+    subject is named -- the opening introductions and the closing thanks -- inside
+    one bounded prompt.
+    """
     if len(transcript) <= _HEAD_CHARS + _TAIL_CHARS:
         return transcript
     return (transcript[:_HEAD_CHARS].rstrip()
@@ -62,6 +86,12 @@ def propose_interviewee(client, transcript: str, persons: list, interviewee) -> 
 
     None means "no proposal" -- which the second line records as the LLM having no
     answer, distinct from a proposal the checkers refuted.
+
+    HOW: build the `P1 = Aunt Maria` roster, ask, then translate the answer back.
+    The reply is normalized defensively -- uppercased, and a bare "2" is repaired
+    to "P2" -- and an id that is not in the roster returns None rather than
+    guessing. The evidence quote is truncated to 200 characters, since it is
+    provenance for a reviewer, not part of the decision.
     """
     if client is None or not client.available() or not persons:
         return None

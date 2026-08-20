@@ -1,6 +1,19 @@
 """
-Printing the scores to the console: one block per transcript, then
-the aggregate across all of them.
+Printing the scores to the console: one block per transcript, then the aggregate.
+
+PURPOSE
+    Turn the result dicts `scoring.evaluate_one` returns into readable console
+    output, and accumulate them into the totals printed at the end.
+
+FIT
+    Called by `evaluation/cli.py`. Reads only `metrics._acc`, so it depends on
+    nothing that computes a score.
+
+HOW
+    `_print_one` formats one transcript, `_accumulate` folds a result into the
+    running totals, and `_print_aggregate` prints those totals. Percentages go
+    through `_fmt`, which renders an unmeasurable value ("no cases") as "n/a"
+    rather than as 0%.
 """
 
 from __future__ import annotations
@@ -10,10 +23,22 @@ from .metrics import _acc
 
 
 def _fmt(x):
+    """Format a 0..1 ratio as a fixed-width percentage; None becomes "n/a".
+
+    Fixed width so the columns line up when several transcripts are printed in
+    sequence.
+    """
     return "  n/a" if x is None else f"{x * 100:5.1f}%"
 
 
 def _print_one(R):
+    """Print the full score block for one transcript.
+
+    `R` is a result dict from `scoring.evaluate_one`; the tuple unpacking on the
+    next line just gives its seven sections short local names. Detail lines
+    (misses, false positives, individual date/age failures) are printed only when
+    non-empty, so a clean transcript stays compact.
+    """
     c, r, g, rp, d, a, l = (R["cluster"], R["rel"], R["gender"], R["replace"],
                             R["dates"], R["ages"], R["locations"])
     print(f"\n### {R['tid']}")
@@ -103,6 +128,21 @@ def _print_one(R):
 
 
 def _accumulate(agg, R):
+    """Fold one transcript's result into the running aggregate, in place.
+
+    Three different accumulation strategies, because the sections are different
+    shapes:
+
+      COUNTS      the seven scored sections plus owner / redaction / identifying are
+                  micro-averaged: every numeric field is SUMMED, and the ratios are
+                  recomputed at the end from those sums. `isinstance(v, bool)` is
+                  excluded because `bool` is a subclass of `int` in Python, so a
+                  True flag would otherwise be summed as 1.
+      VERDICTS    the interviewee block is one verdict per field per transcript, so
+                  it counts outcomes in a `Counter` rather than summing numbers.
+      SECOND LINE action counts are unioned per field, and `llm_ran` is OR-ed, so
+                  the aggregate says "the LLM ran somewhere" if it ran anywhere.
+    """
     for k in ("cluster", "rel", "gender", "replace", "dates", "ages", "locations",
               "owner", "date_redaction", "age_redaction", "identifying"):
         bucket = agg.setdefault(k, {})
@@ -128,6 +168,13 @@ def _accumulate(agg, R):
 
 
 def _print_aggregate(agg, n=None):
+    """Print the totals across all transcripts.
+
+    MICRO-averaged: every ratio is recomputed from the summed numerators and
+    denominators, so a transcript with more entities contributes proportionally
+    more. (A macro average -- the mean of the per-transcript percentages -- would
+    let a transcript with two dates weigh as much as one with twenty.)
+    """
     c, r, g, rp, d, a, l = (agg["cluster"], agg["rel"], agg["gender"], agg["replace"],
                             agg["dates"], agg["ages"], agg["locations"])
     print("\n" + "=" * 74)

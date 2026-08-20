@@ -2,12 +2,31 @@
 The decision procedure itself: given a rule value, an LLM proposal
 and a policy, produce exactly one `Resolution`.
 
-`second_line` is the entry point. Everything else here is one step of it --
-running the checkers, guarding a surviving value that no checker examined
-(`_guard_unsafe`), and putting the remaining candidates of a closed-set field to
-the same checkers before abstaining (`_try_alternatives`).
+PURPOSE
+    `second_line` is the one function that decides a field. Everything else here
+    is a step of it.
 
-Knows nothing about WHICH fields exist; `policies.py` supplies that.
+FIT
+    Sits between `outcomes.py` (the vocabulary it uses) and `walk.py` (which calls
+    it once per field per entity). `policies.py` supplies WHICH fields exist and
+    how each behaves -- this module knows none of that, which is why a new field
+    needs a new policy row and no change here. Also exports `owner_survivors`, so
+    `graph/pipeline._link_interviewee_pii` can run the ownership checkers with
+    exactly this implementation.
+
+HOW -- three stages, in this order
+    1. `_resolve`           answer the five questions (no LLM answer / rule filled
+                            and agreeing / disagreeing / rule empty and the fill
+                            passes / fails) and produce a first `Resolution`.
+    2. `_guard_unsafe`      if the surviving value is on a field's consequential
+                            direction, make it clear the checkers HOWEVER it got
+                            there -- including by rule/LLM agreement. This is what
+                            makes "a checker stands behind every field" true off
+                            the `fill` path.
+    3. `_try_alternatives`  if the field abstained AND its values come from a small
+                            closed set, put the other candidates to the same
+                            checkers before giving up.
+    Finally `_canonicalize` normalizes the surviving value's spelling.
 """
 
 from __future__ import annotations
@@ -18,10 +37,18 @@ from .outcomes import CONFIRM, CONFLICT, FILL, FieldPolicy, KEEP, REJECT, REQUIR
 
 
 def _norm_conf(c) -> str:
+    """Normalize an LLM confidence label; missing or blank becomes "unstated"."""
     return (str(c or "").strip().lower() or "unstated")
 
 
 def _empty(v) -> bool:
+    """Is this value "no answer"?
+
+    Deliberately narrow: `None`, the empty string and the empty tuple only. `False`
+    and `0` are NOT empty, which matters a great deal here -- `replace=False` and
+    `identifying=False` are real, consequential answers, and treating them as
+    missing would silently discard the decision to keep a name.
+    """
     return v is None or v == "" or v == ()
 
 
@@ -44,10 +71,21 @@ def _run_checks(policy: FieldPolicy, value, ctx: CheckContext):
 
 
 def _names(outs) -> tuple:
+    """Just the checker names from a list of outcomes, for the `Resolution` record."""
     return tuple(o.name for o in outs)
 
 
 def _is_unsafe(policy: FieldPolicy, value) -> bool:
+    """Does this value sit on the field's consequential direction?
+
+    "Unsafe" here means "must be verified before it is allowed to stand", not
+    "wrong". Three ways a policy can declare it, checked in order:
+      * `verify_always` -- every non-empty value counts (for fields whose checkers
+        are truth tests);
+      * `unsafe_when`   -- a predicate, for a direction that is not one literal
+        ("any non-empty identity");
+      * `unsafe`        -- a single literal value, e.g. `replace=False`.
+    """
     if policy.verify_always and not _empty(value):
         return True
     if policy.unsafe_when is not None:
@@ -127,9 +165,16 @@ def _guard_unsafe(res: Resolution, policy: FieldPolicy, ctx: CheckContext) -> Re
 
 def second_line(policy: FieldPolicy, rule_value, llm, ctx: CheckContext,
                 llm_ran: bool = True) -> Resolution:
-    """Resolve ONE field, then guard the leak-prone direction.
+    """Resolve ONE field and return its `Resolution`. The package's entry point.
 
-    `llm` is `{"value":..., "confidence":...}` or None.
+    `rule_value` is what the rule layer produced (or None). `llm` is
+    `{"value":..., "confidence":...}` or None. `ctx` is the shared
+    `CheckContext`, with `ctx.entity` already pointed at the entity in question.
+    `llm_ran=False` means no model was available, which relaxes the tiers -- see
+    the `blocking` helper in `_resolve` -- so a rules-only run degrades gracefully
+    instead of blocking everything.
+
+    The body is just the three stages named in the module docstring, composed.
     """
     res = _guard_unsafe(_resolve(policy, rule_value, llm, ctx, llm_ran), policy, ctx)
     res = _try_alternatives(res, policy, rule_value, ctx, llm_ran)
@@ -237,11 +282,40 @@ def _try_alternatives(res: Resolution, policy: FieldPolicy, rule_value,
 
 def _resolve(policy: FieldPolicy, rule_value, llm, ctx: CheckContext,
              llm_ran: bool = True) -> Resolution:
+    """The five questions: turn (rule value, LLM proposal) into a first `Resolution`.
+
+    Branches, in the order they are tested:
+
+      NO LLM ANSWER      -> `keep` if the rule has one, else `reject`. The second
+                            case is "both layers blind", recorded explicitly rather
+                            than left as a silent gap.
+      RULE FILLED        -> run the policy's comparator. Agreement is `confirm`.
+                            Disagreement is a `conflict`, settled by the policy's
+                            `conflict_policy`: `rule_wins` keeps the rule,
+                            `safe_direction` asks the policy's `safer` function, and
+                            `block` refuses to choose and hands it to a human.
+      RULE EMPTY         -> run the checkers on the LLM value. Any failure is a
+                            `reject` naming the failing check; otherwise `fill`.
+                            Note the two different reasons recorded for a fill --
+                            "passed every applicable check" versus "NO deterministic
+                            check applied", which is how an unverified fill stays
+                            visibly unverified.
+
+    The nested `blocking` helper decides whether an outcome should stop the
+    pipeline for review: only for REQUIRED_VERIFIED fields, only when the LLM
+    actually ran, and only for the outcomes that left the value unverified.
+    """
     f = policy.field
     llm_value = None if llm is None else llm.get("value")
     conf = _norm_conf(None if llm is None else llm.get("confidence"))
 
     def blocking(action: str) -> bool:
+        """Should this outcome stop the pipeline for human review?
+
+        Only for a REQUIRED_VERIFIED field, only when the LLM actually ran (with it
+        off the pipeline degrades to rules-only rather than blocking everything),
+        and only for the outcomes that leave the value unverified.
+        """
         # Tiers only bind when the second line actually ran; with the LLM off the
         # pipeline degrades to rules-only behaviour instead of blocking everything.
         if not llm_ran or policy.tier != REQUIRED_VERIFIED:

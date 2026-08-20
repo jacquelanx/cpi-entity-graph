@@ -1,5 +1,29 @@
 """
-Deterministic checkers for LOCATION `subtype` (type) and `parent` (hierarchy).
+Deterministic checkers for LOCATION `subtype`, `parent` and `replace_location`.
+
+PURPOSE
+    Three questions about a place. What KIND of place is it? What place CONTAINS
+    it (and can that be turned into a real LOCATED_IN edge)? And may its name
+    survive un-redacted?
+
+FIT
+    Named by the `subtype_location`, `location_parent` and `replace_location`
+    policies in `graph/second_line/policies.py`. The gazetteer is the rule layer,
+    reached through `ctx.gazetteer` / `ctx.gaz_aliases`; `BROAD_LOCATION_TYPES` and
+    `AMBIGUOUS_BROAD_NAMES` come from `rules/locations.py`, and place-type buckets
+    from `checks/comparators.LOC_CANON`. `resolved_parent_key` is called by
+    `graph/second_line/walk.py` to build the edge.
+
+HOW -- and a distinction worth reading twice
+    `type_in_enum` is a VOCABULARY test ("is this a word we know?") while
+    `type_corroborated` is the TRUTH test ("does the gazetteer or the transcript
+    back it?"). Only the second may fund a keep -- see
+    `keep_rests_on_a_verified_type`. Conflating them meant a model could keep a
+    hamlet un-redacted merely by calling it a "region".
+
+    The keep gate is layered on purpose: broad type, not an ambiguous name, and a
+    type that was actually verified. Keeping is the direction that leaks, so it is
+    the direction that must be proved.
 
 The gazetteer is the rule layer. Two failures motivated these checkers, both
 verified in the mock output:
@@ -131,6 +155,12 @@ def _resolve(candidate: str, ctx):
 
 
 def parent_no_placeholder(value, ctx) -> CheckOutcome:
+    """Reject a parent that is a stand-in rather than a place.
+
+    Models fill gaps with text like "[an unspecified city or town]", "unknown" or
+    a bare "?". `_PLACEHOLDER` catches those shapes, so they never reach the
+    resolution step pretending to be a place name.
+    """
     name = "parent_no_placeholder"
     if not value:
         return na(name, "no parent claimed")
@@ -140,7 +170,14 @@ def parent_no_placeholder(value, ctx) -> CheckOutcome:
 
 
 def parent_not_self(value, ctx) -> CheckOutcome:
-    """Reject circular hierarchies ('Palawan' inside 'Palawan Island')."""
+    """Reject circular hierarchies ('Palawan' inside 'Palawan Island').
+
+    Nothing contains itself, and an edge that said so would make
+    `serialize.location_chain` loop. The comma-separated parent chain is split and
+    each component compared against the entity's own surface forms, accepting a
+    PREFIX match in either direction so "Palawan" and "Palawan Island" are caught
+    as the same place.
+    """
     name = "parent_not_self"
     if not value:
         return na(name, "no parent claimed")
@@ -260,7 +297,15 @@ def keep_rests_on_a_verified_type(value, ctx) -> CheckOutcome:
 
 
 def resolved_parent_key(value, ctx):
-    """The gazetteer key `parent_resolves` accepted -- used to build the edge."""
+    """The gazetteer key AND entity `parent_resolves` accepted, as a `(key, entity)`
+    pair -- or None.
+
+    Not a checker: it is called after a parent claim has been accepted, so the
+    LOCATED_IN edge can be pointed at a real node. Deliberately repeats
+    `parent_resolves`' selection logic (first resolvable, present component of the
+    comma chain) so the edge targets exactly the place the check approved, and also
+    returns the entity rather than just its key.
+    """
     if not value:
         return None
     present = {}

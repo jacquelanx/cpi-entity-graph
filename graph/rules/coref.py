@@ -1,16 +1,54 @@
 """
-Part 2 of Clustering: coreference resolution (the ML layer). This part focuses
-on merging duplicate entities from the last stage (eg. merges "Peanut" / Maria).
-When fastcoref reads the transcript, it produces something like this:
-clusters = [
-    [(226, 231), (250, 255), (315, 318), (320, 337), (394, 397)],
-    [(478, 485), (497, 510), ...],
-]
-Where [(226, 231), (250, 255), (315, 318), (320, 337), (394, 397)] might refer
-to "Maria", "My mom's sister", "Peanut", "Her", "Mar" etc (the SAME person). We refine
-our entities list by merging Maria and Peanut and dropping non-identifying phrases
-like "my mom's sister" and "her". "Mar"/"Maria" (nicknames) were resolved in the
-last stage.
+Clustering, part 2: coreference resolution (the ML layer).
+
+PURPOSE
+    Catch the same-person merges that name matching cannot see, because the two
+    surface forms share no name -- "Maria" and "Peanut". A coreference model
+    reads the whole transcript and reports which spans refer to the same thing;
+    this module maps that back onto our entities.
+
+FIT
+    The last clustering stage, after `rules/name_matching.py` and
+    `rules/aliases.py`, called from `graph/pipeline.run_pipeline` (skippable via
+    `run_coref=False`). This is the ONE module in `graph/rules/` that imports a
+    heavyweight ML dependency (`fastcoref`) and the only rule module that calls
+    `llm_layer` directly. Its merge records feed `graph/second_line`.
+
+HOW -- a DOUBLE GATE, which is the whole design
+    Coreference models over-link: they will happily fuse two different people who
+    are discussed similarly, and an over-merge is unrecoverable (two real people
+    become one). So a coref link is treated as a PROPOSAL that must be
+    corroborated, never as a decision:
+
+      * a gender conflict blocks the merge outright;
+      * two entities in the SAME SENTENCE block it too, unless an LLM is
+        available to read that sentence (co-occurrence usually means "Sarah's
+        brother Danny" -- two people -- but sometimes means "we called Roberto
+        Beto");
+      * with an LLM, the model must positively CONFIRM the pair;
+      * without one, the names must at least be compatible (`_name_compatible`).
+
+    A blocked merge is normally the CORRECT outcome, so it is not flagged for
+    review. Only the genuinely unresolved case -- coref says same, names differ,
+    no LLM to ask -- goes to a human.
+
+COREFERENCE, CONCRETELY
+    When fastcoref reads the transcript, it produces clusters of character spans:
+
+        clusters = [
+            [(226, 231), (250, 255), (315, 318), (320, 337), (394, 397)],
+            [(478, 485), (497, 510), ...],
+        ]
+
+    Each inner list is one referent. The first might be "Maria", "My mom's
+    sister", "Peanut", "Her", "Mar" -- all the SAME person. We refine our entity
+    list by merging Maria and Peanut, and drop the non-identifying phrases ("my
+    mom's sister", "her") because they overlap no detected mention.
+    "Mar"/"Maria" (nicknames) were already resolved by name matching.
+
+NOTE ON THE NUMBERING
+    "Part 2" follows the repo README, even though `aliases.py` also runs between
+    this and part 1.
 """
 
 from __future__ import annotations
@@ -22,6 +60,15 @@ from fastcoref import FCoref
 
 
 def _overlapping_entity(entities: list[Entity], start: int, end: int):
+    """The first entity that has a mention overlapping the span `[start, end)`.
+
+    Coref reports raw character spans; this is how a span is translated back into
+    "which of OUR entities is that?". Uses overlap rather than equality because
+    the coref model's span boundaries rarely match the detector's exactly -- it
+    may report "my aunt Maria" where we detected "Maria". Returns None when the
+    span covers no known person (a pronoun, or a descriptive phrase like "my
+    mom's sister"), which is how such spans get dropped.
+    """
     for e in entities:
         for m in e.mentions:
             if m.start < end and start < m.end:
@@ -29,41 +76,73 @@ def _overlapping_entity(entities: list[Entity], start: int, end: int):
     return None
 
 
-"""(start, end) for each sentence (abbreviation-aware; see graph/text/sentences.py)."""
 def _sentence_bounds(transcript: str) -> list[tuple[int, int]]:
+    """(start, end) for each sentence (abbreviation-aware; see graph/text/sentences.py).
+
+    A thin named wrapper, so the same-sentence test below reads clearly and the
+    splitter can be swapped in one place.
+    """
     return sentence_spans(transcript)
 
 
 def _sent_index(bounds: list[tuple[int, int]], pos: int) -> int:
+    """Which sentence number contains offset `pos`.
+
+    Returns an index into `bounds`, so two positions are in the same sentence
+    exactly when they yield the same number. Falls back to the last sentence for
+    a position past the end of the text.
+    """
     for i, (s, e) in enumerate(bounds):
         if s <= pos < e:
             return i
     return len(bounds) - 1
 
 
-"""
-True if a mention of `a` and a mention of `b` sit in the same sentence
-(strong signal they are two distinct people, not one).
-"""
 def _same_sentence(a: Entity, b: Entity, bounds) -> bool:
+    """True if any mention of `a` shares a sentence with any mention of `b`.
+
+    A strong signal they are two DISTINCT people. Speakers do not usually
+    introduce the same person twice in one breath, so "Sarah's brother Danny"
+    naming both in one sentence means they are two entities.
+
+    HOW: collect the set of sentence numbers each entity appears in, then
+    intersect them -- `a_sents & b_sents` is non-empty exactly when some sentence
+    contains both.
+    """
     a_sents = {_sent_index(bounds, m.start) for m in a.mentions}
     b_sents = {_sent_index(bounds, m.start) for m in b.mentions}
     return bool(a_sents & b_sents)
 
 
-"""Lowercased name tokens across all of an entity's forms, titles/kin stripped."""
 def _name_tokens(ent: Entity) -> set[str]:
+    """Every lowercased name token this entity was ever written with.
+
+    Runs `normalize` over each distinct surface form and unions the results, so
+    an entity written as both "Maria" and "Maria Lopez" yields
+    `{"maria", "lopez"}`. Titles and kin words are stripped by `normalize`.
+    """
     toks: set[str] = set()
     for form in ent.sorted_mentions:
         toks.update(normalize(form))
     return toks
 
 
-"""
-Could these two be the SAME name written differently? Used to corroborate
-a coref-suggested merge. Conservative; requires positive evidence.
-"""
 def _name_compatible(a: Entity, b: Entity) -> bool:
+    """Could these two entities be the SAME name written differently?
+
+    The no-LLM corroboration for a coref link. Three ways to say yes:
+
+      * ONE SIDE HAS NO NAME at all (only descriptors like "my mom's sister"), so
+        there is nothing to contradict -- permissive by design, since coref is the
+        only thing that could ever attach such a phrase to a person.
+      * A SHARED TOKEN ("Maria Lopez" / "Maria").
+      * ONE TOKEN IS A PREFIX OF THE OTHER ("Will" / "William"). The 3-character
+        minimum keeps initials and very short fragments from matching almost
+        anything.
+
+    Otherwise no. Conservative on purpose: this is the gate that stops coref
+    fusing two unrelated people when no LLM is available to arbitrate.
+    """
     ta, tb = _name_tokens(a), _name_tokens(b)
     if not ta or not tb:
         return True                                   # one side is descriptor-only
@@ -77,12 +156,23 @@ def _name_compatible(a: Entity, b: Entity) -> bool:
 
 
 def _genders_conflict(a: Entity, b: Entity) -> bool:
+    """True only when both entities have a KNOWN and DIFFERENT gender.
+
+    A missing gender on either side is not a conflict -- unknown is not evidence.
+    Used as a hard block on merging, since a gender disagreement is a strong
+    two-way signal that coref linked two different people.
+    """
     ga, gb = a.attributes.get("gender"), b.attributes.get("gender")
     return ga is not None and gb is not None and ga != gb
 
 
-"""Fold `other` into `base` (mentions, non-null attributes, review flag)."""
 def _merge_into(base: Entity, other: Entity, person_entities: list[Entity]) -> None:
+    """Fold `other` into `base` and remove it from the person list.
+
+    Same operation as `aliases._merge`: `base` absorbs the mentions (kept in
+    transcript order) and any non-None attributes, and inherits a review flag so
+    a concern about the folded entity is not lost with it.
+    """
     base.mentions.extend(other.mentions)
     base.mentions.sort(key=lambda m: m.start)
     base.attributes.update(
@@ -92,17 +182,27 @@ def _merge_into(base: Entity, other: Entity, person_entities: list[Entity]) -> N
     person_entities.remove(other)
 
 
-"""
-Run coref and fold its clusters into our entities.
-Returns (entities, merge_records, ran_flag). `merge_records` covers every pair the
-coref link PROPOSED and the LLM adjudicated -- the ones it merged (`applied=True`)
-and the ones the LLM vetoed (`applied=False`, `value=False`) -- in the same shape
-`graph/aliases.apply_alias_cues` returns, so `graph.second_line._resolve_merges` can
-give each one a Resolution and a ledger row. Pairs blocked by the deterministic
-gender / same-sentence rules before the LLM was ever consulted are not recorded:
-no LLM decision was made, so there is nothing to arbitrate.
-"""
 def apply_coref(transcript: str, person_entities: list[Entity], llm=None) -> tuple[list[Entity], list[dict], bool]:
+    """Run the coreference model and fold its clusters into the person entities.
+
+    Returns `(entities, merge_records, ran_flag)`. Entities are modified IN PLACE
+    and the same list is returned, minus anything folded away. `ran_flag` is
+    always True on return -- reaching this point means the model ran.
+
+    HOW: predict clusters over the whole transcript, then for each cluster map its
+    spans onto our entities (`touched`). A cluster touching fewer than two
+    entities has nothing to merge. Otherwise the FIRST entity touched becomes
+    `base` and each remaining one is considered for folding into it, subject to
+    the double gate described in the module docstring.
+
+    `merge_records` covers every pair the coref link PROPOSED and the LLM
+    adjudicated -- the ones it merged (`applied=True`) and the ones the LLM vetoed
+    (`applied=False`, `value=False`) -- in the same shape
+    `graph/aliases.apply_alias_cues` returns, so `graph.second_line._resolve_merges`
+    can give each one a Resolution and a ledger row. Pairs blocked by the
+    deterministic gender / same-sentence rules before the LLM was ever consulted are
+    not recorded: no LLM decision was made, so there is nothing to arbitrate.
+    """
     model = FCoref()
     pred = model.predict(texts=[transcript])[0]  # pass in an one-item list and extract the only item
     clusters = pred.get_clusters(as_strings=False)  # see header comment

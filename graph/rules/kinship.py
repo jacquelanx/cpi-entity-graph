@@ -1,19 +1,47 @@
 """
-Part 3 of Clustering: creating relationship edges through kinship extraction.
-'my aunt Maria' is a fact: it provides information like RELATED_TO(interviewee,
-Maria, detail='aunt'). We use this in surrogate generation later.
-Right now we just have entities: Entity E0 (Interviewee), or
-Entity E1 (Maria, "she", "my aunt") but we need to mark relations between them.
+Kinship extraction: turn family words in the text into RELATED_TO edges.
 
-We handle these surface forms:
-  1. "my aunt Maria"                    -> interviewee RELATED_TO Maria
-  2. "his brother John"                 -> antecedent RELATED_TO John
-  3. "my cousin named Trey"             -> "... named/called X"
-  4. "Maria, my aunt"                   -> appositive
-  5. "Maria's brother John"             -> named possessor
-  6. "my mom's sister Denise"           -> possessive chain
-Each form tolerates optional descriptive modifiers ("my *older* sister Jen"),
-multi-token names ("Maria Rodriguez"), and step/half/in-law/grand kin terms.
+PURPOSE
+    "my aunt Maria" is a fact worth keeping: it means
+    RELATED_TO(interviewee, Maria, detail="aunt"). Clustering gives us the NODES
+    -- E0 (the interviewee), E1 (Maria, "she", "my aunt") -- and this module adds
+    the EDGES between them. Surrogate generation needs them so that a fake name
+    for Maria stays consistent with her being the speaker's aunt. As a side
+    effect it also fills in gender, which a kin word states directly ("aunt" is
+    female).
+
+FIT
+    Called by `graph/pipeline.run_pipeline` right after clustering settles and
+    BEFORE the attribute stages, because `attributes.infer_person_role` reads the
+    kin edges this produces. Its `KINSHIP_GENDER` table and `_entity_at` helper
+    are imported by `rules/aliases.py`, and the derived `KIN` regex is reused by
+    `checks/ownership.py` and `checks/relation_evidence.py` -- so the kin
+    vocabulary is defined once, here.
+
+HOW
+    A vocabulary table (`KINSHIP_GENDER`) is compiled into one big alternation
+    regex (`KIN`), which is then dropped into six sentence patterns, each matching
+    a different English way of naming a relative. Every pattern extracts a
+    (source person, kin word, target name) triple and hands it to the local `add`
+    helper, which creates the edge and infers gender. Patterns run in a fixed
+    order -- the most specific first -- and `add` dedupes, so an earlier, more
+    precise reading wins over a later, looser one.
+
+    We handle these surface forms:
+      1. "my aunt Maria"                -> interviewee RELATED_TO Maria
+      2. "his brother John"             -> antecedent RELATED_TO John
+      3. "my cousin named Trey"         -> "... named/called X"
+      4. "Maria, my aunt"               -> appositive
+      5. "Maria's brother John"         -> named possessor
+      6. "my mom's sister Denise"       -> possessive chain
+
+    Each form tolerates optional descriptive modifiers ("my *older* sister Jen"),
+    multi-token names ("Maria Rodriguez"), and step/half/in-law/grand kin terms.
+
+    A form that does NOT clear one of these patterns produces no rule edge at
+    all. That is deliberate: the LLM relation second line can still propose it,
+    and `checks/relation_evidence.py` verifies the proposal against the
+    transcript. Abstaining is safe; a wrong family tie is not.
 """
 
 
@@ -66,11 +94,19 @@ KINSHIP_GENDER = {
 }
 
 
-"""
-Accounts for spacing/hyphen variants: 'in-law' vs 'in law', 'stepmom' 
-vs 'step mom', 'grandma' vs 'grand ma'.
-"""
 def _flex(word: str) -> str:
+    """Turn one kin word into a regex tolerant of how people actually write it.
+
+    English kin compounds are spelled inconsistently, and a table entry has to
+    match all of them: "in-law" / "in law", "stepmom" / "step mom" / "step-mom",
+    "grandma" / "grand ma".
+
+    HOW: escape the word so no character is treated as regex syntax, then relax
+    two things -- any hyphen becomes "space or hyphen", and a leading
+    step/grand/great/god/half prefix may be followed by an optional space or
+    hyphen. So "mother-in-law" compiles to a pattern also matching "mother in
+    law".
+    """
     w = re.escape(word).replace(r"\-", r"[\s\-]")           # in-law hyphen/space
     w = re.sub(r"^(step|grand|great|god|half)",             # optional prefix gap
                lambda m: m.group(1) + r"[\s\-]?", w)
@@ -104,16 +140,31 @@ _POSS = r"my|our"                     # first person -> interviewee
 _PRON = r"his|her|their"              # third person -> nearest antecedent
 
 
-"""Look up implied gender, tolerating spacing/hyphen variants."""
 def _kin_gender(raw: str):
+    """The gender a kin word implies, or None if the word is neutral or unknown.
+
+    The inverse of `_flex`: whatever spelling the transcript used has to be mapped
+    back onto one table key. Whitespace is collapsed to hyphens first, so "mother
+    in law" becomes "mother-in-law"; if that misses, hyphens are removed
+    altogether so "step mom" becomes "stepmom". Returns None both for genuinely
+    neutral terms ("cousin") and for unrecognized words -- callers treat both as
+    "no gender evidence".
+    """
     key = re.sub(r"\s+", "-", raw.strip().lower())
     if key in KINSHIP_GENDER:
         return KINSHIP_GENDER[key]
     return KINSHIP_GENDER.get(key.replace("-", ""))
 
 
-"""Which entity owns a mention overlapping the range [start, end)?"""
 def _entity_at(entities: list[Entity], start: int, end: int):
+    """The entity whose mention overlaps the character range `[start, end)`.
+
+    How a regex capture group is turned into a graph node: the pattern matched
+    "Maria" at some offsets, and this finds the entity clustering built for it.
+    Overlap rather than exact equality, because the detector's span and the
+    pattern's capture group need not align exactly. None means the matched text
+    is not a person we know about, and the caller skips the edge.
+    """
     for e in entities:
         for m in e.mentions:
             if m.start < end and start < m.end:
@@ -121,8 +172,17 @@ def _entity_at(entities: list[Entity], start: int, end: int):
     return None
 
 
-"""Which PERSON entity was mentioned most recently before position `pos`?"""
 def _entity_before(entities: list[Entity], pos: int, exclude_id: str | None = None):
+    """The PERSON entity mentioned most recently before offset `pos`.
+
+    Resolves the antecedent of a third-person possessive: in "his brother John",
+    whose brother? The answer is taken to be the last person named before the
+    phrase, tracked by keeping the mention with the largest `end` that still
+    falls at or before `pos`.
+
+    `exclude_id` skips the TARGET of the relation being built, so "John" in "his
+    brother John" cannot end up as its own antecedent.
+    """
     best, best_end = None, -1
     for e in entities:
         if e.category != "PERSON" or e.entity_id == exclude_id:
@@ -138,15 +198,40 @@ def extract_kinship(
     person_entities: list[Entity],
     interviewee: Entity,  # a special entity
 ) -> list[Edge]:
+    """Scan the transcript for kin phrases and return the RELATED_TO edges found.
+
+    Also sets `gender` on target entities as a side effect, since a kin word
+    states it outright.
+
+    HOW: six regex passes over the full text, in a deliberate order. Pattern 6
+    (the possessive CHAIN, "my mom's sister Denise") runs FIRST because pattern 1
+    would otherwise match its tail ("my mom") and claim the wrong relation; `add`
+    dedupes by (source, target), so whichever pattern gets there first wins. The
+    remaining patterns go from most to least constrained.
+
+    Each pass does the same three things: match, resolve the captured name to an
+    entity with `_entity_at`, and resolve the OWNER -- the interviewee for a
+    first-person possessive ("my"/"our"), or the nearest preceding person for a
+    third-person one ("his"/"her"/"their"), or the named possessor in pattern 5.
+    """
     edges: list[Edge] = []
     seen: set[tuple] = set()  # (source_id, target_id) dedup across patterns
 
 
-    """
-    HELPER FUNCTION! Used for the six patterns that we handle below: this function
-    creates a RELATED_TO edge (deduped) and infer the target's gender.
-    """
     def add(source_id, target, detail, evidence, gender_word=None):
+        """Record one kin relation: create the edge, then infer the target's gender.
+
+        Shared by all six patterns below. Silently does nothing when either side
+        is unresolved, when a person would be related to themselves, or when this
+        (source, target) pair was already recorded -- which is what makes pattern
+        order meaningful, since the first pattern to claim a pair keeps it.
+
+        `detail` is the kin word as written ("aunt", "mom's sister"), stored on
+        the edge. `gender_word` overrides which word gender is read from: for the
+        possessive chain the relation detail is "mom's sister" but the gender to
+        infer is the SECOND word's ("sister" -> female). Gender is only filled in
+        when the target has none yet, so an earlier, more direct statement wins.
+        """
         if source_id is None or target is None:
             return
         if source_id == target.entity_id:

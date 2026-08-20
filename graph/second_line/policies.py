@@ -1,9 +1,44 @@
 """
 THE registry: one `FieldPolicy` per field.
 
-This table is the answer to "what does this pipeline promise about field X?" --
-its tier, its comparator, its checkers, and what happens when the two layers
-disagree. Read it top to bottom to audit the stage.
+PURPOSE
+    This table is the answer to "what does this pipeline promise about field X?" --
+    its tier, its comparator, its checkers, and what happens when the two layers
+    disagree. Read it top to bottom to audit the stage.
+
+FIT
+    The declarative half of `graph/second_line/`. `engine.py` implements the
+    decision procedure but knows no field names; `walk.py` looks each field up
+    here. Imports every module in `graph/checks/` (to name checkers), the
+    vocabulary from `outcomes.py`, and the tie-breakers from `safe_direction.py`.
+    Adding a field to this pipeline means adding a row HERE, not editing the
+    engine.
+
+HOW TO READ A ROW
+    `FieldPolicy(name, tier, conflict_policy, comparator, ...)`:
+
+      name             the field, as it appears in `Entity.provenance`.
+      tier             REQUIRED_VERIFIED (must end up verified or it BLOCKS
+                       review) / REQUIRED_OR_ABSTAIN (verified if present, but may
+                       legitimately be absent) / OPTIONAL.
+      conflict_policy  who wins a disagreement: RULE_WINS, SAFE_DIRECTION (ask the
+                       `safer=` function) or BLOCK (refuse to choose).
+      comparator       what counts as the two layers AGREEING -- `C.exact`,
+                       `C.ci`, `C.kin_synonym`, `C.date_close(3)`, ...
+      checkers=        the deterministic predicates that can refuse a value.
+      verify_always=   True when the checkers are TRUTH tests, so they bind on
+                       every path and not only on `fill`.
+      unsafe= /
+      unsafe_when=     which direction is consequential enough to require
+                       verification however it was reached.
+      safe_value=      what to fall back to when a checker refutes it.
+      attr=            the attribute key, when it differs from the field name.
+      canon=           canonical spelling for the surviving value.
+
+    Grouped by category (PERSON, then LOCATION, DATE, AGE, identifiers, and the
+    two pair-shaped fields `relation` and `same_person`). The per-row comments
+    record WHY each choice is what it is; those are the load-bearing part of this
+    file.
 """
 
 from __future__ import annotations

@@ -1,6 +1,24 @@
 """
 Deterministic checkers for `given_name` / `surname`.
 
+PURPOSE
+    Stop a name part from being INVENTED or MIS-SLOTTED. Surrogate generation
+    mints a fake first name for whatever sits in `given_name` and a fake family
+    name for `surname`, so putting a surname in the given-name slot produces a
+    plausible-looking but structurally wrong identity.
+
+FIT
+    Named by the `given_name` and `surname` policies in
+    `graph/second_line/policies.py`. Reads the title/kin vocabularies from
+    `rules/name_matching.py`, so the checkers and the rule split share one word
+    list. Note `part_not_a_titled_surname` is registered on `given_name` ONLY.
+
+HOW
+    Four cheap, independent tests. One is about provenance (the token must appear
+    in the transcript) and three are about slotting (it must not be a title, a kin
+    word, or a lone token behind a form of address). Each returns `na` on an empty
+    value, since "no name part claimed" is a legitimate answer.
+
 The rule layer splits the longest mention form on whitespace after stripping
 titles and kinship words. That produces a surname in the given-name slot for
 every honorific-prefixed person -- verified: `Father Nguyen`, `Mr. Landry`,
@@ -24,6 +42,12 @@ _EXTRA_KIN = {"mamaw", "papaw", "meemaw", "pawpaw", "pappy", "memaw", "mawmaw"}
 
 
 def _tokens_of(entity) -> set[str]:
+    """Every word the transcript actually used for this person, lowercased.
+
+    Splits each surface form on whitespace and commas and strips surrounding
+    punctuation, so "Dr. Sarah Hayes" contributes {"dr", "sarah", "hayes"}. Used
+    to test whether a proposed name part was written down or made up.
+    """
     toks = set()
     for form in getattr(entity, "sorted_mentions", []):
         for raw in re.split(r"[\s,]+", form):
@@ -45,6 +69,7 @@ def part_is_token_of_mention(value, ctx) -> CheckOutcome:
 
 
 def part_not_a_title(value, ctx) -> CheckOutcome:
+    """REFUTATION: an honorific is not a name. "Dr" is not anybody's given name."""
     name = "part_not_a_title"
     if not value:
         return na(name, "no part claimed")
@@ -55,6 +80,12 @@ def part_not_a_title(value, ctx) -> CheckOutcome:
 
 
 def part_not_a_kin_word(value, ctx) -> CheckOutcome:
+    """REFUTATION: a kin word is not a name. "Papaw Clarence" -> "Papaw" is refuted.
+
+    Checks the rule layer's strip set plus `_EXTRA_KIN`, the dialect grandparent
+    terms, so the checker catches the mis-slot even for words the rule table
+    handles separately.
+    """
     name = "part_not_a_kin_word"
     if not value:
         return na(name, "no part claimed")
@@ -77,6 +108,11 @@ def part_not_a_titled_surname(value, ctx) -> CheckOutcome:
 
     Registered on `given_name` only (see the policy registry) -- for `surname` the very
     same claim is CORRECT.
+
+    HOW: look for a surface form that is EXACTLY two tokens where the first is a
+    form of address and the second is the proposed value -- "Father Nguyen" with a
+    proposal of "Nguyen". Exactly two, because with three or more tokens
+    ("Dr. Sarah Hayes") the given name is unambiguous and no inference is needed.
     """
     name = "part_not_a_titled_surname"
     if not value:

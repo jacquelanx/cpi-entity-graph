@@ -1,4 +1,29 @@
 """
+The open-world PROPOSER: one classifier per entity category.
+
+PURPOSE
+    Ask the model the questions the deterministic TABLES answer -- is this a public
+    figure? what kind of place is this? what date is this? -- for every entity,
+    whether or not the table already had an answer. Returns plain dicts and
+    mutates nothing.
+
+FIT
+    One of the three proposal passes `graph/pipeline.run_pipeline` runs. Uses
+    `client._windows` for context and nothing from `graph`.
+
+HOW
+    Six small sub-classifiers, each a system prompt plus a `client.judge` call,
+    dispatched by entity category in `openworld_propose`. Two details worth
+    knowing:
+
+      * CONTEXT IS SIZED PER QUESTION (`_RADIUS` / `_MAX_SNIPS`). Whether a name
+        is a public figure or a private namesake often turns on cues far from the
+        name, so that gets the widest read; a date expression is self-contained, so
+        extra context there is cost without benefit.
+      * "open world" means the model may name things no local table lists -- a
+        public event, a place type, a person's fame. Which is exactly why every
+        answer here is a PROPOSAL that `graph/checks/` still has to accept.
+
 The open-world PROPOSER. The deterministic tables (gazetteer, public-figure list,
 public-event table, kinship/professional word sets, date + age parsers) are small
 and can never cover everything. This module asks the local LLM the same questions
@@ -49,6 +74,12 @@ _MAX_SNIPS = {"person": 5, "location": 3, "date": 3, "age": 3}
 
 
 def _ctx(transcript, entity, kind="date") -> str:
+    """Context excerpts around an entity, sized for the KIND of question being asked.
+
+    Looks the radius and snippet count up by `kind` ("person" / "location" /
+    "date" / "age") and joins the resulting passages into one block ready to paste
+    into a prompt. See `_RADIUS` above for why the sizes differ.
+    """
     return "\n".join(_windows(transcript, entity,
                               radius=_RADIUS[kind], max_snips=_MAX_SNIPS[kind]))
 
@@ -83,6 +114,13 @@ _PERSON_SYS = (
 
 
 def classify_person_public(client, transcript, entity) -> dict | None:
+    """Ask whether a named person is a public figure, and how they relate to the speaker.
+
+    Returns the model's raw reply -- `{public_figure, who, relationship,
+    confidence}` -- or None if no model is available. `openworld_propose` turns
+    that into a `replace` proposal (public figure -> may keep the name) and a
+    `subtype_person` proposal (family / professional).
+    """
     if client is None or not client.available():
         return None
     name = entity.sorted_mentions[0] if entity.sorted_mentions else "?"
@@ -109,6 +147,13 @@ _LOC_SYS = (
 
 
 def classify_location(client, transcript, entity) -> dict | None:
+    """Ask for a place's geographic type, its containing place, and whether it identifies.
+
+    Returns `{type, parent, identifying, confidence}` or None. The `parent` answer
+    is what can become a LOCATED_IN edge, once
+    `checks/location.parent_resolves` confirms the named place is both in the
+    gazetteer and present in this transcript.
+    """
     if client is None or not client.available():
         return None
     name = entity.sorted_mentions[0] if entity.sorted_mentions else "?"
@@ -147,6 +192,13 @@ _EVENT_SYS = (
 
 
 def resolve_public_event(client, transcript, entity) -> dict | None:
+    """Ask for the fixed calendar date of a public event the anchor table does not list.
+
+    Returns `{event, date, approximate, identifying, confidence}` or None. Used for
+    DATE_ANCHOR spans -- "the Buffalo Creek flood" -- where the table missed. The
+    `identifying` answer distinguishes a nationally known event (safe to print)
+    from one known only in one small community (not).
+    """
     if client is None or not client.available():
         return None
     phrase = entity.mentions[0].text if entity.mentions else "?"
@@ -181,6 +233,14 @@ _DATE_SYS = (
 
 
 def resolve_date(client, transcript, entity, interview_date=None) -> dict | None:
+    """Ask for the calendar date of an expression the rule parsers could not read.
+
+    Covers an absolute date dateutil rejected and a relative expression outside the
+    regex set ("a few years back"). `interview_date` is put in the prompt as the
+    anchor a relative expression is measured from -- without it the model has
+    nothing to count back from. Returns
+    `{date, approximate, public_event, identifying, confidence}` or None.
+    """
     if client is None or not client.available():
         return None
     phrase = entity.mentions[0].text if entity.mentions else "?"
@@ -209,6 +269,14 @@ _AGE_SYS = (
 
 
 def resolve_age(client, transcript, entity) -> dict | None:
+    """Ask for a whole-year age, AND whether the span is really an age at all.
+
+    The second question is the important one: a detector that tags every "twelve"
+    hands us "the water came up twelve feet" as an AGE, and `is_an_age` is the
+    model's half of refuting that (the rule half is
+    `checks/ages.not_a_measurement`). Returns
+    `{value, approximate, is_an_age, confidence}` or None.
+    """
     if client is None or not client.available():
         return None
     phrase = entity.mentions[0].text if entity.mentions else "?"
@@ -236,6 +304,13 @@ _ANCHOR_SYS = (
 
 
 def resolve_age_anchor(client, transcript, entity) -> dict | None:
+    """Ask which date expression in the passage the age was stated WITH.
+
+    The model must answer with an EXACT quote, because
+    `checks/stated_with.date_entity_for` matches that quote back to a detected date
+    entity -- a paraphrase resolves to nothing and the claim is dropped. Returns
+    `{date_text, confidence}` or None.
+    """
     if client is None or not client.available():
         return None
     phrase = entity.mentions[0].text if entity.mentions else "?"
@@ -260,11 +335,33 @@ def resolve_age_anchor(client, transcript, entity) -> dict | None:
 # meant a gazetteer HIT was never double-checked -- is gone.
 # --------------------------------------------------------------------------
 def openworld_propose(transcript: str, entities: list, llm, interview_date=None) -> dict:
+    """Run the right sub-classifier for every entity and collect the proposals.
+
+    Returns `{entity_id: {field: {"value", "confidence", <extras>}}}` -- empty if
+    no model is available, which is what makes the whole layer optional.
+
+    Dispatches on `entity.category`: PERSON -> public-figure classifier;
+    LOCATION / INSTITUTION -> place classifier; DATE_ANCHOR -> public-event
+    resolver; other date categories -> date resolver; AGE -> age parser plus the
+    age<->date anchor. The interviewee is skipped for the person classifier -- the
+    subject of the interview is not a public-figure candidate and has no
+    family/professional subtype.
+
+    The local `put` helper is the only way anything enters `out`, so the
+    `{"value", "confidence"}` shape is uniform and an empty answer is dropped
+    rather than proposed as a blank.
+    """
     out: dict = {}
     if llm is None or not llm.available():
         return out
 
     def put(e, field, value, confidence=None, **extra):
+        """Record one proposal, ignoring empty answers.
+
+        `**extra` carries per-field annotations the checkers need -- the event name
+        behind a date, the "who" behind a public-figure claim -- alongside the
+        value itself.
+        """
         if value is None or value == "":
             return
         out.setdefault(e.entity_id, {})[field] = {

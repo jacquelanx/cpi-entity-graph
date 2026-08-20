@@ -1,4 +1,25 @@
 """
+Build the TWO-LAYER (rules + LLM) interactive HTML report.
+
+PURPOSE
+    The same twelve-stage walkthrough as `pipeline_report.py`, with the LLM second
+    line ON, plus an interactive "Two-layer review" panel where a human can accept
+    or reject each suggestion and conflict and export the decisions as JSON.
+
+FIT
+    A runnable entry point over `demo/cases.py`, `demo/render/` and
+    `evaluation/scoring.py`. Note the FIRST thing it does is set
+    `KG_USE_LLM=1` -- before any project import -- because `evaluation/config.py`
+    reads that flag at import time.
+
+HOW
+    `reconcile_items` buckets every row of the arbitration LEDGER into four
+    columns (agreements / suggestions / conflicts / unverified). Reading the ledger
+    rather than the review-flag text is the important part; see the long comment
+    above `_FIELD_LABEL` for what went wrong when it did the latter. The accept /
+    reject interaction is a small inlined `_JS` block holding decisions in memory
+    and exporting them as a download.
+
 Interactive two-layer report: runs BOTH the deterministic ruleset and the local
 LLM layer on the sample transcripts and builds one self-contained HTML page
 with, per transcript:
@@ -42,6 +63,12 @@ TITLES = {
 
 
 def _load_eval():
+    """The per-transcript scorer, imported lazily.
+
+    Must be imported AFTER `KG_USE_LLM=1` is set at the top of this module, because
+    `evaluation.config` reads that flag at import time to decide whether to build
+    an LLM client.
+    """
     from evaluation import scoring
     return scoring
 
@@ -78,10 +105,34 @@ _FIELD_LABEL = {
 
 
 def _val(v):
+    """A resolved value as display text; None becomes an em dash."""
     return "—" if v is None else str(v)
 
 
 def reconcile_items(case):
+    """Bucket every ledger row into the four review columns.
+
+    Returns `(agree, sugg, conflict, unverified)`, each a list of
+    `{kind, text, detail}` dicts ready to render.
+
+    The bucketing, by resolution ACTION:
+      confirm                  -> AGREE      (both layers said the same thing)
+      fill                     -> SUGGEST    (actionable: the LLM filled a gap)
+      conflict                 -> CONFLICT   (actionable: the layers disagreed)
+      reject with failed checks-> CONFLICT   (a proposal was refuted)
+      reject / keep + blocking -> CONFLICT   (a human must decide)
+      keep                     -> UNVERIFIED (rules stand, nothing confirmed them)
+      reject, nothing failed   -> UNVERIFIED (BOTH LAYERS BLIND)
+
+    The last two are the reason this column exists. They are not disagreements, so
+    they are not conflicts, and they are not proposals either -- an earlier version
+    of this function had no branch for them and they vanished from the page, which
+    made a field with no proposer at all look clean.
+
+    Applied coref merges and held-apart pairs are appended as their own rows, so
+    clustering decisions sit beside the field decisions. Each column is finally
+    sorted most-actionable first -- blocking rows, then unverified ones.
+    """
     info = case["info"]
     ledger = info.get("ledger", {})
     names = {e.entity_id: (e.sorted_mentions[0] if e.sorted_mentions else e.entity_id)
@@ -164,9 +215,20 @@ _KIND = 0
 
 
 def _rec_section(tid, agree, sugg, conflict, unverified):
+    """Render the four-column review panel for one transcript.
+
+    `_KIND` is a module-level counter used to mint a unique DOM id per card, since
+    the JavaScript keys its decision map by that id and every transcript's cards
+    live in the same document.
+
+    Nested helpers: `card` renders one row (with accept/reject buttons only when
+    the row is actionable), `col` renders a column and, for the informational
+    columns, caps how many rows are shown while noting how many were omitted.
+    """
     global _KIND
 
     def card(item, actionable):
+        """One review row. `actionable` adds the accept/reject buttons."""
         global _KIND
         _KIND += 1
         cid = f"{tid}-r{_KIND}"
@@ -179,6 +241,7 @@ def _rec_section(tid, agree, sugg, conflict, unverified):
                 f"<div class='rec-d'>{escape(item['detail'])}</div>{btns}</div>")
 
     def col(title, items, actionable, cls, cap=None):
+        """One review column. `cap` limits the rows shown and notes how many were not."""
         shown = items if cap is None else items[:cap]
         body = "".join(card(i, actionable) for i in shown) or "<p class='muted'>none</p>"
         if cap is not None and len(items) > cap:
@@ -266,6 +329,12 @@ _JS = """<script>
 
 
 def build():
+    """Render the whole two-layer report as one HTML string.
+
+    One pipeline run per transcript, with the LLM on. There is deliberately NO
+    second, LLM-disabled pass -- see the inline note below -- so
+    `scripts/pipeline_report.py` is the rules-only baseline.
+    """
     kg_eval = _load_eval()          # imported with KG_USE_LLM=1 -> _LLM is set
 
     tabs, panels = [], []
@@ -303,6 +372,11 @@ def build():
 
 
 def main():
+    """Build the report, write it to `reports/`, and open it in a browser.
+
+    Needs Ollama running with the model; the persistent cache makes re-runs fast,
+    but a first run takes a few minutes. Set `KG_NO_OPEN=1` to skip the browser.
+    """
     print("Building two-layer report (rules + LLM)...")
     OUT.write_text(build(), encoding="utf-8")
     print(f"Wrote {OUT}")

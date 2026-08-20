@@ -1,8 +1,23 @@
 """
-Build ONE self-contained HTML dashboard covering all sample transcripts.
-Run this dashboard with the following command:
-./venv/bin/python3 scripts/pipeline_report.py
-(Might take a minute to load)
+Build the RULES-ONLY HTML dashboard covering all sample transcripts.
+
+PURPOSE
+    One self-contained HTML file with a tab per sample transcript, each showing the
+    full twelve-stage walkthrough plus its metrics -- with the LLM second line
+    switched OFF. This is the deterministic baseline.
+
+    ./venv/bin/python3 scripts/pipeline_report.py
+    (Might take a minute to load)
+
+FIT
+    A runnable entry point over `demo/cases.py` (to run the pipeline),
+    `demo/render/` (to build the HTML) and `evaluation/scoring.py` (for the
+    metrics tiles). `scripts/llm_report.py` is the two-layer counterpart and
+    renders the identical stages with the second line on.
+
+HOW
+    Everything -- CSS, markup and the tab-switching JavaScript -- is inlined into a
+    single file, so the report can be moved or emailed without losing assets.
 """
 
 from __future__ import annotations
@@ -28,14 +43,26 @@ TITLES = {
 }
 
 
-"""The per-transcript scorer. Imported lazily: `evaluation.config` reads
-KG_USE_LLM at import time, and this module sets it above."""
 def _load_eval():
+    """The per-transcript scorer, imported lazily.
+
+    `evaluation.config` reads `KG_USE_LLM` and configures logging AT IMPORT TIME,
+    so importing it must happen after any environment change -- which is why this
+    is a function rather than a module-level import. (This script leaves the flag
+    unset; `scripts/llm_report.py` sets it, and shares the pattern.)
+    """
     from evaluation import scoring
     return scoring
 
 
 def build():
+    """Render the whole dashboard as one HTML string.
+
+    Loops the sample transcripts, running the pipeline and the scorer for each,
+    and accumulates two headline totals -- privacy leaks and over-merges -- for the
+    footer. The first tab is marked active so the page opens on a transcript
+    rather than on nothing.
+    """
     kg_eval = _load_eval()
     tabs, panels = [], []
     tot_leaks = tot_over = 0
@@ -90,6 +117,12 @@ def build():
 
 
 def main():
+    """Build the report, write it to `reports/`, and open it in a browser.
+
+    Set `KG_NO_OPEN=1` to skip the browser (useful in CI or over SSH); a failure to
+    open is caught and reported rather than raised, since the file is already
+    written by then.
+    """
     print("Building dashboard (pipeline + coref)...")
     OUT.write_text(build(), encoding="utf-8")
     print(f"Wrote {OUT}")

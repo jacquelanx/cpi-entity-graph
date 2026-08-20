@@ -1,5 +1,20 @@
 """
-The stylesheet. One minimalist sheet shared by both report pages.
+The stylesheet: one minimalist sheet shared by both report pages.
+
+PURPOSE
+    A single module-level string, `CSS`, inlined into the `<head>` of each
+    generated page -- so a report is one self-contained HTML file with no external
+    assets to lose.
+
+FIT
+    A leaf: imported by `demo/render/__init__.py` and written out by
+    `scripts/pipeline_report.py` and `scripts/llm_report.py`. Depends on nothing.
+
+HOW
+    Colours are declared once as CSS custom properties in the `:root` block at the
+    top, so the palette can be changed in one place. The class names below
+    correspond to the ones the renderers emit -- `.stage`, `.prov`, `.act`, `.ck`,
+    `.m-tile` and so on.
 """
 
 from __future__ import annotations

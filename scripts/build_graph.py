@@ -1,6 +1,23 @@
 """
 THE entry point: transcript + detections -> the artifact surrogate generation reads.
 
+PURPOSE
+    The production command. Reads one or more transcripts plus their detection
+    files, runs the pipeline, and writes a validated artifact per transcript to
+    `out/graphs/`.
+
+FIT
+    A thin CLI over `graph/loader.py` -> `graph/pipeline.py` ->
+    `graph/serialize.py`. `--demo` borrows `demo.cases.detections_from_gold` so the
+    handoff can be smoke-tested before a real detector exists.
+
+HOW
+    `main` is argument parsing and a loop; `build_one` is the actual work for one
+    transcript. Failures are per-transcript -- a bad input file is reported and the
+    loop continues -- and the process EXIT CODE reports the overall verdict (see
+    the codes below), so a caller in a pipeline can branch on "ready" versus
+    "needs review" without parsing stdout.
+
     ./venv/bin/python3 scripts/build_graph.py                    # every transcript in data/
     ./venv/bin/python3 scripts/build_graph.py interview_001      # just one
     ./venv/bin/python3 scripts/build_graph.py --demo             # the bundled samples
@@ -53,7 +70,12 @@ DEFAULT_GAZ = REPO_ROOT / "data" / "gazetteer.csv"
 
 
 def _demo_inputs(tid: str):
-    """Transcript + mentions from the gold annotations (a stand-in detector)."""
+    """Transcript + mentions from the gold annotations (a stand-in detector).
+
+    Returns the same `(text, mentions, metadata)` triple `loader.load_stage_inputs`
+    does, so `build_one` needs no other branch. A FIXTURE, not a detector -- never
+    point `--demo` at real data.
+    """
     from demo.cases import detections_from_gold
 
     text = load_transcript(SAMPLES / "transcripts" / f"{tid}.txt")
@@ -63,6 +85,12 @@ def _demo_inputs(tid: str):
 
 
 def _ids(args) -> list[str]:
+    """Which transcript ids to process.
+
+    Explicit ids on the command line win; otherwise every `.txt` in the relevant
+    transcripts directory, sorted so runs are reproducible. A missing directory
+    raises `Violation`, which `main` turns into exit code 1.
+    """
     if args.transcript_ids:
         return list(args.transcript_ids)
     root = (SAMPLES if args.demo else Path(args.data_dir)) / "transcripts"
@@ -72,6 +100,12 @@ def _ids(args) -> list[str]:
 
 
 def build_one(tid: str, args) -> tuple[Path, list]:
+    """Process one transcript end to end. Returns `(written path, blocking rows)`.
+
+    Load (real detections or the demo fixture) -> run the pipeline -> serialize.
+    `serialize` validates before writing, so a returned path means the artifact on
+    disk is well-formed and its offsets agree with the transcript.
+    """
     text, mentions, metadata = (
         _demo_inputs(tid) if args.demo
         else load_stage_inputs(tid, args.data_dir))
@@ -82,6 +116,11 @@ def build_one(tid: str, args) -> tuple[Path, list]:
 
 
 def _report(tid: str, path: Path, blocking: list) -> None:
+    """Print one transcript's outcome, listing any blocking fields for a reviewer.
+
+    Paths are shown relative to the working directory when possible, and each
+    blocking reason is truncated so a long explanation does not swamp the summary.
+    """
     print(f"  {tid}: wrote {path.relative_to(Path.cwd())
                             if path.is_relative_to(Path.cwd()) else path}")
     if not blocking:
@@ -95,6 +134,13 @@ def _report(tid: str, path: Path, blocking: list) -> None:
 
 
 def main() -> int:
+    """Parse arguments, build every requested transcript, and return the exit code.
+
+    Exit codes are the interface (see the module docstring): 0 = written and
+    nothing blocking, 2 = written but a human must resolve N fields first, 1 = at
+    least one transcript failed. A failure is caught per transcript so one bad
+    input does not abandon the rest of the batch.
+    """
     ap = argparse.ArgumentParser(
         description="Build the knowledge-graph artifact for one or more transcripts.")
     ap.add_argument("transcript_ids", nargs="*",

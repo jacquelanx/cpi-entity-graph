@@ -1,6 +1,17 @@
 """
-Panels for the people half: who the interviewee is, and one
-card per named person with their attributes, relations and owned identifiers.
+Panels 05-06: who the interviewee is, and one card per named person.
+
+PURPOSE
+    Render the two person-centred panels. The interviewee panel is the important
+    one -- interviewee-only de-identification runs entirely off that node, so its
+    fields are shown with full provenance. The people panel is a grid of compact
+    cards, one per named third party.
+
+FIT
+    Sits on `primitives.py` and `provenance.py`; assembled by
+    `page.transcript_panel`. The three module-level helpers at the top build the
+    cross-references both panels need -- who owns which identifier, and who is
+    related to the speaker how.
 """
 
 from __future__ import annotations
@@ -12,7 +23,14 @@ from .provenance import _action_badge, _checks_html, _flag_html, _prov_details, 
 
 # ---------- shared: owned attributes ----------
 def _owned_by_person(case):
-    """person entity_id -> [owned attribute entities], from ATTRIBUTE_OF edges."""
+    """person entity_id -> [owned attribute entities], from ATTRIBUTE_OF edges.
+
+    Two sources, in this order. First the ATTRIBUTE_OF EDGES, which is the
+    authoritative record. Then, as a fallback, any entity carrying
+    `owner == "interviewee"` in its attributes that no edge already covered --
+    `seen` tracks which those are. The fallback matters because an owner can be
+    resolved on the attribute without an edge having been built for it.
+    """
     ents = {e.entity_id: e for e in case["entities"]}
     iv = case["info"]["interviewee"].entity_id
     owned, seen = {}, set()
@@ -29,6 +47,12 @@ def _owned_by_person(case):
 
 
 def _rel_to_interviewee(case):
+    """`{person entity_id: relation word}` for everyone tied to the speaker.
+
+    Checks both edge directions, since a RELATED_TO edge may point either way, and
+    uses `setdefault` so the FIRST relation found for a person wins if they are
+    described more than one way.
+    """
     iv = case["info"]["interviewee"].entity_id
     m = {}
     for ed in case["edges"]:
@@ -42,6 +66,13 @@ def _rel_to_interviewee(case):
 
 
 def _owned_chip(e):
+    """A compact label for one owned attribute, for display on a person card.
+
+    Formats by category -- an age as "age 68 (approx)", a date as its resolved
+    value, an identifier by its `_ID_LABEL` name -- and falls back to the raw
+    mention text when no value was resolved, so an unresolved span is still
+    visible rather than silently absent.
+    """
     a = e.attributes
     if e.category == "AGE":
         v = a.get("value")
@@ -62,6 +93,13 @@ def _owned_chip(e):
 
 # ---------- 05 · the interviewee ----------
 def stage_interviewee(case) -> str:
+    """Panel 05: the interviewee node, field by field, with full provenance.
+
+    The most important panel on the page: interviewee-only de-identification runs
+    entirely off this node, so each field is shown with its outcome badge, the
+    deterministic checks that examined it, and any blocking mark. The nested
+    `field_row` helper renders one such row.
+    """
     """The subject of de-identification, on their own. Everything the surrogate
     generator needs about the one person we are actually protecting, plus how each
     of those values was decided."""
@@ -75,6 +113,11 @@ def stage_interviewee(case) -> str:
     ents = {e.entity_id: e for e in case["entities"]}
 
     def field_row(label, value, res_key, extra=""):
+        """One field row on the interviewee panel.
+
+        `res_key` names the provenance entry to render alongside the value, so the
+        row shows the decision as well as the answer.
+        """
         res = prov.get(res_key)
         state = _action_badge(res) if res is not None else ""
         checks = _checks_html(res) if res is not None else ""
@@ -164,6 +207,13 @@ _HANDLED_ATTR_KEYS = {
 
 
 def _person_card(e, case, owned, rel_map, names) -> str:
+    """One compact card for a named third party.
+
+    Shows the name, subtype, relation to the speaker, inferred attributes, owned
+    identifiers and review flags. Provenance uses the STACKED layout
+    (`_prov_list`), because a five-column table does not fit a ~300px card -- see
+    that function.
+    """
     a = e.attributes
     chips, sugg, other = [], [], []
 
@@ -231,6 +281,12 @@ def _person_card(e, case, owned, rel_map, names) -> str:
 
 
 def stage_people(case) -> str:
+    """Panel 06: a grid of cards, one per named person other than the interviewee.
+
+    Builds the three cross-reference maps once (`_owned_by_person`,
+    `_rel_to_interviewee`, `_names_map`) and passes them to every card, rather than
+    each card re-deriving them from the edge list.
+    """
     iv = case["info"]["interviewee"].entity_id
     owned, rel_map, names = _owned_by_person(case), _rel_to_interviewee(case), _names_map(case)
     people = [e for e in case["entities"]

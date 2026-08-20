@@ -1,6 +1,23 @@
 """
 THE unified second line. One arbitration point for every field.
 
+PURPOSE
+    Every field on every entity is decided in exactly one place: here. A rule
+    proposes, the LLM proposes, deterministic checkers verify, and the outcome is
+    recorded as a `Resolution` so the decision can be audited afterwards. This
+    package is also where the review-blocking list and the ledger come from.
+
+FIT
+    Called by `graph/pipeline.run_pipeline` (once, as `resolve_all`) and by
+    `graph/rules/interviewee.py` (for its one field, before the main walk).
+    Depends on `graph/checks/` for the verification predicates and on
+    `graph/models.py`; the `llm_layer` proposals arrive as plain dicts, so the
+    dependency stays one-way.
+
+HOW
+    See the five questions below, then "WHERE THINGS LIVE" at the bottom of this
+    docstring for the file-by-file map.
+
 The rules run first. For each field this module then asks one of five questions
 and records exactly one outcome:
 

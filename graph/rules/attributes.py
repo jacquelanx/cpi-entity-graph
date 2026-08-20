@@ -1,6 +1,40 @@
 """
-Fill each entity's attribute dict for the surrogate generator later.
-We accept None values if the value is unknown.
+Attribute inference: fill in what we can say ABOUT each person.
+
+PURPOSE
+    Populate the `attributes` dict of person entities with the facts surrogate
+    generation needs: `given_name` / `surname` (so a fake name can be minted with
+    the right shape), `gender`, `role`, `ethnicity`, `subtype`
+    (FAMILY / PROFESSIONAL / PUBLIC_FIGURE) and `replace` (whether this name must
+    be redacted at all). A value that cannot be established is left as None --
+    unknown is a legitimate answer here, and abstaining is always safer than
+    guessing.
+
+FIT
+    Four independent entry points, all called by `graph/pipeline.run_pipeline` in
+    this order: `infer_interviewee_gender` (before kinship),
+    `infer_person_attributes`, then `infer_person_role` and `infer_ethnicity`
+    (after, because `role` reads the kinship edges). Depends on
+    `rules/name_matching.split_name_parts` for the name split and
+    `graph/text/turns.mask_to_subject` for turn scoping; imports from
+    `rules/interviewee.py` and `checks/gender.py` lazily to avoid cycles. Every
+    field it writes is then arbitrated by `graph/second_line/` against the LLM's
+    proposal and verified by the matching module in `graph/checks/`.
+
+HOW -- one idea repeated per field
+    Each inference is a CLOSED SET of high-precision constructions, matched by
+    regex, plus a rule for what to do when the evidence disagrees with itself:
+    abstain and (usually) raise a review flag. Two scoping disciplines run
+    throughout and are what make the precision possible:
+
+      * TURN SCOPING. Anything read as first-person evidence about the speaker is
+        matched against `mask_to_subject(transcript)`, a same-length copy where
+        every character the subject did not say is NUL. So the interviewer saying
+        "I'm a mother myself" cannot set the subject's gender.
+      * SELF-DESCRIPTION ONLY. The speaker's gender is read from nouns they apply
+        to THEMSELVES ("I'm a mother"), never from relational terms about others
+        ("my husband"), which would encode an assumption about their
+        relationships.
 """
 
 
@@ -132,7 +166,19 @@ def _honorific_address_gender(transcript: str, interviewee: Entity):
     """(gender, evidence) implied by a gendered honorific the INTERVIEWER uses to
     address the subject, or (None, None). Shares `interviewee._is_address` and
     `checks/gender.HONORIFIC_GENDER` with the checker that verifies this field, so
-    the proposer and the verifier read the same evidence."""
+    the proposer and the verifier read the same evidence.
+
+    HOW: collect the speaker's name tokens, then scan every titled address in the
+    transcript, keeping only matches that (a) sit in an INTERVIEWER turn, (b) name
+    THIS entity, and (c) `_is_address` accepts as a real address rather than a
+    mention of a third party. Each surviving match contributes the gender its
+    honorific implies ("Ms." -> F).
+
+    Returns a gender only if exactly ONE was found across all matches -- a
+    transcript where the interviewer says both "Mr." and "Ms." to the same name is
+    contradicting itself, and abstaining is correct. Inert on a transcript that
+    never names the speaker, since there are no name tokens to match.
+    """
     from .interviewee import ADDRESS_TITLED, _is_address
     from ..text.turns import parse_turns, in_interviewer_turn
     from ..checks.gender import honorific_gender
@@ -171,7 +217,18 @@ def _honorific_address_gender(transcript: str, interviewee: Entity):
 
 def infer_person_role(transcript: str, person_entities: list[Entity],
                       edges: list[Edge]) -> None:
-    """RULE layer for `role`: the kinship-edge detail, else a professional cue."""
+    """RULE layer for `role`: the kinship-edge detail, else a professional cue.
+
+    Two sources, in priority order. If a RELATED_TO edge points AT this person,
+    its `detail` already names their role relative to the speaker ("aunt") -- so
+    the edges built by `rules/kinship.py` are indexed by target and read
+    directly. Failing that, a professional construction near any of the person's
+    mentions ("my caseworker Denise") supplies the job word.
+
+    Never overwrites an existing `role`. `setdefault` on `detail_for` keeps the
+    FIRST edge for a target, so the earliest-stated relation wins if a person is
+    described more than one way.
+    """
     detail_for: dict[str, str] = {}
     for ed in edges:
         if ed.relation != Relation.RELATED_TO:
@@ -292,7 +349,14 @@ _ETH_NEAR = 60
 
 
 def normalize_ethnonym(label: str) -> str | None:
-    """Canonical lowercase ethnonym, or None when the label is not one we accept."""
+    """Canonical lowercase ethnonym, or None when the label is not one we accept.
+
+    The gate that stops a capture group from turning any capitalized word into an
+    ethnicity. Collapses whitespace, lowercases and strips trailing punctuation,
+    then requires membership in `ETHNONYMS`; if that misses, hyphen and space are
+    swapped and it is tried again, so "Scotch Irish" and "Scotch-Irish" both
+    resolve to the one canonical form.
+    """
     t = re.sub(r"\s+", " ", str(label or "").strip().lower()).strip(".,;:")
     if not t:
         return None
@@ -324,7 +388,13 @@ _ETH_HEDGE_WINDOW = 90
 
 def ethnicity_claims_with_pos(text: str, patterns=None):
     """Every (canonical_label, evidence_quote, start_offset) an accepted construction
-    yields. The offset is what lets a caller ask whether the claim is HEDGED."""
+    yields. The offset is what lets a caller ask whether the claim is HEDGED.
+
+    Runs each pattern in `patterns` over the text and keeps only matches whose
+    captured label survives `normalize_ethnonym`, so an unrecognized capitalized
+    word is dropped rather than becoming an ethnicity. `patterns` defaults to the
+    self-description set.
+    """
     out = []
     for rx in (patterns or _ETH_PATTERNS):
         for m in rx.finditer(text):
@@ -367,6 +437,21 @@ def infer_ethnicity(transcript: str, person_entities: list[Entity],
     the subject's. A named person's label must come from a construction bound to
     one of THEIR mentions -- which is what keeps the speaker's ethnicity from
     silently spreading to everyone they talk about.
+
+    HOW, two separate passes:
+
+      THE SPEAKER. Collect every self-description claim in their own speech. One
+      distinct label -> that is the answer. Several -> try again keeping only the
+      UNHEDGED claims; if exactly one survives, the rest were family lore and it
+      wins. Still several -> abstain and flag for review.
+
+      EVERYONE ELSE. Only look in the ~60 characters immediately AFTER each of the
+      person's own mentions, and only for constructions that can attach to a third
+      party ("<Name> was part Cherokee", "of Vietnamese descent"). First-person
+      constructions are excluded from this pass on purpose: "my Mamaw Opal always
+      claimed we were part Cherokee" sits right after Opal's name, but the "we" is
+      the speaker's family, not a statement about Opal. As with the speaker, more
+      than one distinct label means abstain.
     """
     spoken = mask_to_subject(transcript)
     if not interviewee.attributes.get("ethnicity"):
@@ -415,9 +500,20 @@ def infer_ethnicity(transcript: str, person_entities: list[Entity],
 
 
 def _personal_signal(transcript: str, ent, kin_ids: set) -> bool:
-    """True when a name that matches the public-figure list is, in THIS transcript,
-    a private individual (a relative, someone with a professional role in the
-    interviewee's life, or a namesake introduced personally) -> must be redacted."""
+    """True when a name matching the public-figure list is really a PRIVATE person
+    in this transcript, and so must be redacted after all.
+
+    Four signals, any one of which is enough:
+      * the entity is tied to the interviewee by a kinship edge;
+      * a first-person possessive sits directly on the name ("my Beyonce");
+      * a naming construction introduces them ("a friend named Beyonce");
+      * a professional cue surrounds the mention ("my doctor, Obama");
+      * the text explicitly disclaims the celebrity ("Beyonce -- no relation").
+
+    Deliberately narrow. Third-person ATTRIBUTIVE use of a famous name ("his
+    Elvis impression", "my dad admired Obama") is NOT a personal signal; treating
+    it as one over-redacted ordinary conversation about public figures.
+    """
     if ent.entity_id in kin_ids:                          # the interviewee's relative
         return True
     for m in ent.mentions:
@@ -431,13 +527,29 @@ def _personal_signal(transcript: str, ent, kin_ids: set) -> bool:
     return False
 
 
-"""
-Infer high level attributes about PERSON entities. Earlier, we've detected PERSON
-entities, clustered mentions, and built RELATED_TO edges and etc. 
-"""
 def infer_person_attributes(
     transcript: str, person_entities: list[Entity], edges: list[Edge]
 ) -> None:
+    """Infer name parts, subtype and the `replace` directive for every person.
+
+    Runs after clustering and kinship, so it can use the RELATED_TO edges as
+    evidence. For each person entity, in order:
+
+      1. NAME PARTS -- split the LONGEST surface form (most complete name) into
+         given name and surname via the shared `split_name_parts`.
+      2. PUBLIC FIGURE -- if a surface form is on the closed `PUBLIC_FIGURES`
+         list, default to KEEPING the name (a celebrity reveals nothing about the
+         interviewee) unless `_personal_signal` says this is really a private
+         namesake. See the inline note on why that keep is only provisional.
+      3. SUBTYPE -- anyone touched by a kinship edge is FAMILY; otherwise a
+         professional cue within 60 characters of a mention makes them
+         PROFESSIONAL.
+      4. DEFAULTS -- `replace=True` (redact unless something said otherwise) and
+         `gender=None` (unknown, so a gender-neutral surrogate can be chosen).
+
+    `setdefault` is used throughout so an earlier, better-evidenced stage
+    (kinship gender, say) is never overwritten.
+    """
     kin_targets = {e.target for e in edges if e.relation == Relation.RELATED_TO}
     kin_sources = {e.source for e in edges if e.relation == Relation.RELATED_TO}
     kin_ids = kin_targets | kin_sources

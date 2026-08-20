@@ -1,9 +1,29 @@
 """
 `conflict_policy=SAFE_DIRECTION` resolvers.
 
-When the rule and the LLM disagree and neither outranks the other, these pick
-the side whose failure mode is over-redaction rather than a leak. One resolver
-per field shape, named in the policy table.
+PURPOSE
+    Break a rule-vs-LLM tie for the REDACTION DIRECTIVES, where the two possible
+    errors cost wildly different amounts. Over-redacting a place name loses some
+    colour from a transcript; under-redacting one can identify a household. So
+    these functions do not ask "who is more likely right?" -- they ask "which
+    answer fails more safely?".
+
+FIT
+    Referenced by name from `graph/second_line/policies.py` (as each policy's
+    `safer=`) and called by `engine._resolve` on the conflict path. Reads
+    `checks/ages.py` and `checks/dates.py` for the two verdicts that let a rule
+    outrank the model.
+
+HOW
+    The baseline is one line: `True if either side says True else False` -- i.e.
+    more redaction wins. Three variants then carve out a NARROW exception where the
+    rule's answer is a deterministic, auditable table lookup and the model's is a
+    guess about a question the table already settles (a country-level place, a
+    nationally-known event, a span proved not to be an age). In every case the
+    keep must still clear its checkers via `engine._guard_unsafe`, so these loosen
+    the POLICY and never the verification.
+
+One resolver per field shape, named in the policy table.
 """
 
 from __future__ import annotations

@@ -1,6 +1,29 @@
 """
-Deterministic checkers for PERSON `replace` / PUBLIC_FIGURE and the
-FAMILY / PROFESSIONAL subtype.
+Deterministic checkers for PERSON `replace` / PUBLIC_FIGURE, `role` and subtype.
+
+PURPOSE
+    Decide whether a person's name may survive un-redacted, and corroborate the
+    two things the model likes to assert from world knowledge: what somebody's
+    ROLE is ("father", "caseworker") and whether they are FAMILY or PROFESSIONAL.
+
+FIT
+    Named by the `replace`, `role` and `subtype_person` policies in
+    `graph/second_line/policies.py`. Reuses `attributes._personal_signal` and
+    `PROFESSIONAL_CONTEXT` from the rule layer, and `rules/kinship.py`'s KIN
+    vocabulary via `_kin_binding_re`, so no word list is duplicated.
+
+HOW -- BINDING, not proximity
+    The idea that unifies most of this file: a kin word NEAR a name proves
+    nothing, because the word can belong to somebody else in the same sentence.
+    It has to be BOUND to the name by a construction -- "my Papaw Clarence"
+    (possessive before) or "Clarence, my Papaw" (a cleanly-closing appositive
+    after). `_kin_word_binds_a_mention` is that test, and it is what separates a
+    real relative from a union leader mentioned in the same breath as one.
+
+    Professional corroboration DOES use a proximity window, on purpose: a job word
+    is a DESCRIPTION of the person named ("a caseworker, Ms. Boudreaux") rather
+    than a possessive tying them to the speaker. Different question, different
+    test.
 
 `replace` is the one field where the safe direction is asymmetric: keeping a name
 is the leak-prone move, redacting it is the harmless one. So the policy is
@@ -140,6 +163,11 @@ def role_corroborated(value, ctx) -> CheckOutcome:
 
 
 def _has_kin_edge(ctx) -> bool:
+    """Does this entity sit at either end of a RELATED_TO edge?
+
+    Cheap corroboration that the rule layer already found a family tie for this
+    person, in either direction.
+    """
     eid = ctx.entity.entity_id
     return any(ed.relation == Relation.RELATED_TO and eid in (ed.source, ed.target)
                for ed in ctx.edges)
@@ -161,6 +189,20 @@ def _has_kin_edge(ctx) -> bool:
 # had to solve this exact ambiguity: the kin word must be followed by punctuation,
 # "and"/"who"/"whom", or end of text -- never by a verb continuing the sentence.
 def _kin_binding_re():
+    """Compile the two BINDING constructions that tie a kin word to a name.
+
+    Returns `(before, after)`:
+      before -- "my Papaw " immediately preceding the name (`$`-anchored, so it
+                must sit right at the end of the lookback text).
+      after  -- ", my Papaw" immediately following it, and CLOSING CLEANLY: the
+                lookahead requires punctuation, "and"/"who"/"whom" or end of text
+                after the kin word. That closer is what rejects "John L. Lewis, my
+                Papaw would say that name like a prayer" -- there the kin word is
+                the subject of the next clause, not an appositive naming Lewis.
+
+    Built lazily inside a function because `rules/kinship.py` cannot be imported
+    at module load without a cycle.
+    """
     from ..rules.kinship import KIN, _MOD
     before = re.compile(rf"\b(?:my|our|his|her|their)\s+{_MOD}{KIN}[\s,]*$", re.I)
     after = re.compile(
@@ -174,7 +216,12 @@ _KIN_BOUND = None
 
 
 def _kin_word_binds_a_mention(ctx) -> str:
-    """The bound kin construction naming this entity, else ""."""
+    """The bound kin construction naming this entity, else "".
+
+    Tries both directions around each of the entity's mentions, within 60
+    characters, and returns the matched phrase so a caller can quote it as
+    evidence. The compiled regexes are memoized in `_KIN_BOUND` on first use.
+    """
     global _KIN_BOUND
     if _KIN_BOUND is None:
         _KIN_BOUND = _kin_binding_re()

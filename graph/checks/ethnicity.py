@@ -1,6 +1,23 @@
 """
 Deterministic checkers for `ethnicity`.
 
+PURPOSE
+    Refute ethnicity guessed from a NAME. An ethnicity is only trustworthy when
+    the transcript says it, about that person; anything else is a stereotype
+    dressed as data, and it feeds surrogate name selection.
+
+FIT
+    Named by the `ethnicity` policy in `graph/second_line/policies.py`. The rule
+    side is `rules/attributes.infer_ethnicity`, whose `normalize_ethnonym` and
+    `ethnicity_claims` are reused here so both layers accept the same vocabulary
+    and the same constructions.
+
+HOW
+    Three checks in a chain: the label must be a known ethnonym, that label must
+    literally occur in the transcript, and its occurrence must be tied to THIS
+    person. As elsewhere in this package the first failure owns the explanation
+    and the later checkers return `na`.
+
 This was the worst-behaved field in the pipeline, and it was invisible because it
 sat outside the second line entirely: "LLM-only, no rule to check against". The
 consequence, verified on both sample transcripts, was that EVERY named person
@@ -38,12 +55,24 @@ _NEAR = 80
 
 
 def _canon(value):
+    """The canonical ethnonym for a proposed label, or None if it is not one.
+
+    Lazy import to avoid a cycle: `rules/attributes.py` and this module reference
+    each other.
+    """
     from ..rules.attributes import normalize_ethnonym
     return normalize_ethnonym(value)
 
 
 def _label_re(canon: str):
-    """Matches the label in text, tolerating the hyphen/space variant."""
+    """A regex matching this label in text, tolerating hyphen/space variants.
+
+    Builds an alternation over "scotch-irish" / "scotch irish", longest first so
+    the fullest form wins. The `(?<![a-z])` / `(?![a-z])` guards are lookarounds
+    that require a non-letter on each side -- a word-boundary test that still works
+    for multi-word labels containing spaces, where plain `\b` would be applied in
+    the wrong places.
+    """
     alts = {canon, canon.replace("-", " "), canon.replace(" ", "-")}
     return re.compile(r"(?<![a-z])(?:" +
                       "|".join(re.escape(a) for a in sorted(alts, key=len, reverse=True))
@@ -51,6 +80,7 @@ def _label_re(canon: str):
 
 
 def label_is_known_ethnonym(value, ctx) -> CheckOutcome:
+    """The label must be a recognized ethnonym, not free text the model composed."""
     name = "label_is_known_ethnonym"
     if not value:
         return na(name, "no ethnicity claimed")

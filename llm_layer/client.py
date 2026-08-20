@@ -1,4 +1,24 @@
 """
+The Ollama client, its persistent cache, and the shared context-window helper.
+
+PURPOSE
+    One place that talks to the model. Handles availability probing, JSON-mode
+    requests, retries, and a disk cache so re-running a transcript costs nothing.
+    Also provides `_windows`, the helper every task module uses to assemble the
+    transcript excerpts a prompt should contain.
+
+FIT
+    The bottom of `llm_layer/`: the four task modules (`extract.py`,
+    `openworld.py`, `identifier_judge.py`, `merge_adjudicate.py`,
+    `interviewee.py`) all go through `LLMClient.judge`. `graph/pipeline.py` builds
+    the client via `default_client()` or is handed one.
+
+HOW
+    Determinism first: temperature 0, a fixed seed, and `format: "json"` so the
+    reply is parseable. Results are then cached under a HASH of
+    (model, system, prompt), which is what makes the cache safe to write to disk
+    -- see the privacy note below.
+
 Local-LLM layer (optional, OFF by default). Uses local Ollama server.
 If Ollama isn't running or the model can't be reached, the pipeline
 behaves EXACTLY like the rules-only version. LLM is not required!
@@ -38,13 +58,36 @@ _FLUSH_EVERY = 25   # write to disk after this many new entries (also on exit)
 
 
 def _key(model: str, system: str, prompt: str) -> str:
+    """The cache key: a SHA-256 hash of (model, system, prompt).
+
+    Hashing rather than storing the prompt is the privacy mechanism. Prompts
+    contain verbatim transcript text; the hash does not, so the on-disk cache
+    holds only opaque keys and the model's short JSON answers. The NUL byte
+    (`\x00`) separates the three parts so no two different triples can produce
+    the same concatenation.
+    """
     h = hashlib.sha256(f"{model}\x00{system}\x00{prompt}".encode("utf-8"))
     return h.hexdigest()
 
 
 class LLMClient:
+    """A cached, fail-soft client for a local Ollama server.
+
+    Two behaviours define it. FAIL-SOFT: every method returns None or False
+    rather than raising, so an unreachable server makes the pipeline rules-only
+    instead of broken. CACHED: successful answers are kept in memory and flushed
+    to disk, so a re-run of the same transcript issues no requests at all.
+    """
+
     def __init__(self, model: str = DEFAULT_MODEL, url: str = OLLAMA_URL, timeout: int = 60,
                  cache_path: Path | None = None):
+        """Set up the client and load any existing cache from disk.
+
+        `_available` starts as None meaning "not probed yet" -- distinct from
+        False, which means "probed and the server did not answer". The `atexit`
+        hook flushes entries accumulated since the last periodic save, so a run
+        that ends between flushes does not lose them.
+        """
         self.model = model
         self.url = url.rstrip("/")
         self.timeout = timeout
@@ -57,6 +100,11 @@ class LLMClient:
             atexit.register(self.save)  # flush any unsaved entries on exit
 
     def _load(self) -> None:
+        """Read the cache file, silently starting fresh if it is missing or corrupt.
+
+        A cache is an optimization, so an unreadable one is not an error -- the
+        run just costs more model calls.
+        """
         if self._cache_path is None or not self._cache_path.exists():
             return
         try:
@@ -65,7 +113,19 @@ class LLMClient:
             self._cache = {}            # corrupt/old file -> start fresh
 
     def save(self) -> None:
-        """Atomically persist the successful (non-None) cache entries."""
+        """Atomically persist the successful (non-None) cache entries.
+
+        FAILURES ARE NOT PERSISTED. A None entry means the model errored or
+        returned unparseable output, and that is usually transient -- keeping it
+        only in memory means the next run retries instead of caching a failure
+        forever.
+
+        "Atomically" means: write to a temporary file in the same directory, then
+        `os.replace` it over the real one. `os.replace` is atomic on a single
+        filesystem, so a crash mid-write leaves the OLD cache intact rather than a
+        half-written file. The whole thing is wrapped in a bare `except` because a
+        cache write must never take down a pipeline run.
+        """
         if self._cache_path is None or not self._dirty:
             return
         keep = {k: v for k, v in self._cache.items() if v is not None}
@@ -80,7 +140,12 @@ class LLMClient:
             pass                        # cache is best-effort; never crash the run
 
     def available(self) -> bool:
-        """True if the Ollama server answers. Probed once, then cached."""
+        """True if the Ollama server answers. Probed once, then cached.
+
+        Hits the cheap `/api/tags` endpoint with a short 3-second timeout, so a
+        machine with no Ollama installed pays the cost once per process rather
+        than once per call.
+        """
         if self._available is not None:
             return self._available
         try:
@@ -93,9 +158,26 @@ class LLMClient:
         return self._available
 
     def judge(self, prompt: str, system: str | None = None) -> dict | None:
-        """Return the model's JSON reply as a dict, or None on any failure.
+        """Ask the model one question and return its JSON reply as a dict, or None.
+
+        The single entry point every task module uses. Steps:
+
+          1. CACHE. A hit returns immediately -- including a cached None, so a
+             failure is not retried within the same run.
+          2. AVAILABILITY. No server means None, with no request attempted.
+          3. REQUEST. `temperature: 0` and `seed: 0` make the answer
+             reproducible; `format: "json"` constrains the model to emit parseable
+             JSON; `num_ctx: 4096` caps the context window (which is why
+             `_windows` enforces a character budget).
+          4. RETRY ONCE. The loop runs at most twice, because the common failure
+             is a malformed or empty parse rather than a broken server, and one
+             retry usually clears it. Anything that is not a dict is treated as a
+             failure.
+          5. CACHE THE RESULT and periodically flush to disk.
+
         Successful results are cached (in memory + persisted to disk); failures
-        are cached only for this run so they are retried on a later run."""
+        are cached only for this run so they are retried on a later run.
+        """
         key = _key(self.model, system or "", prompt)
         if key in self._cache:
             return self._cache[key]
@@ -135,7 +217,11 @@ _DEFAULT_CLIENT: LLMClient | None = None
 
 
 def default_client() -> LLMClient:
-    """Process-wide client so the availability probe happens once."""
+    """The process-wide client, created on first use.
+
+    A module-level singleton so the availability probe and the cache load happen
+    once per process rather than once per transcript.
+    """
     global _DEFAULT_CLIENT
     if _DEFAULT_CLIENT is None:
         _DEFAULT_CLIENT = LLMClient()
@@ -157,17 +243,36 @@ _CTX_CHAR_BUDGET = 6000
 
 
 def _windows(transcript: str, entity, radius: int = 160, max_snips: int = 3):
+    """Transcript excerpts around an entity's mentions, ready to paste into a prompt.
+
+    Returns a list of strings, each a passage of the transcript with "..." marking
+    where it was cut. `radius` is how many characters of context to take either
+    side of a mention; `max_snips` caps how many mentions contribute.
+
+    HOW, in four steps:
+      1. For each of the first `max_snips` mentions, take a `radius`-character
+         window either side.
+      2. SNAP OUTWARD to sentence boundaries, so the model reads whole sentences
+         rather than fragments cut mid-word.
+      3. MERGE overlapping or touching windows, so two nearby mentions do not
+         send the same passage twice. Sorting first is what makes a single
+         backward-looking comparison (`a <= merged[-1][1]`) sufficient.
+      4. TRUNCATE to a soft total character budget, so a generous `radius` can
+         never silently overflow the model's context window.
+    """
     from .extract import _sentences               # local: keep client.py import-light
     sents = _sentences(transcript) or [(0, len(transcript))]
     n = len(transcript)
 
     def sent_start(pos):
+        """The start offset of the sentence containing `pos` (0 if none)."""
         for (ss, se) in sents:
             if ss <= pos < se:
                 return ss
         return 0
 
     def sent_end(pos):
+        """The end offset of the sentence containing `pos` (end of text if none)."""
         for (ss, se) in sents:
             if ss <= pos < se:
                 return se

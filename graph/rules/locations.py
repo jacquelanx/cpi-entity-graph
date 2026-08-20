@@ -1,9 +1,28 @@
 """
-Gazetteer lookup and the LOCATED_IN hierarchy.
+Places: gazetteer lookup, the LOCATED_IN hierarchy, and the redaction directive.
 
-Resolve aliases via the gazetteer ("NOLA" -> "New Orleans"), then build
-LOCATED_IN edges. When locations are replaced later, the surrogate generator
-walks these edges upward/downward for consistency.
+PURPOSE
+    Three jobs for LOCATION / INSTITUTION entities. Resolve each name against a
+    gazetteer (a reference table of places), so "NOLA" is recognized as "New
+    Orleans" and the place gets a TYPE (city / state / country / ...). Build
+    LOCATED_IN edges from the gazetteer's parent column, giving a containment
+    hierarchy. And decide `replace` -- whether the name must be redacted.
+
+FIT
+    `graph/pipeline.run_pipeline` calls `load_gazetteer` once, then
+    `build_location_edges` and `infer_location_replace` in that order (the second
+    reads the subtype the first assigns). The LOCATED_IN edges are what
+    `graph/serialize.location_chain` walks, so surrogate generation can keep a
+    substituted neighbourhood inside a substituted city. The checkers in
+    `graph/checks/location.py` verify both `location_parent` and the KEEP
+    direction of `replace`.
+
+HOW
+    The gazetteer is loaded into two dicts -- canonical records and an
+    alias -> canonical map -- so a lookup is a single hash hit. Redaction is
+    decided by GRANULARITY: anything coarser than a city is safe to keep, a city
+    or finer is not. Unknown types default to replace, because an untyped place is
+    far more likely to be a small local one than a country.
 
 `BROAD_LOCATION_TYPES` / `AMBIGUOUS_BROAD_NAMES` are the rule layer behind the
 `replace_location` decision; the checkers in `graph/checks/location.py` gate the
@@ -17,11 +36,23 @@ from pathlib import Path
 from ..models import Edge, Entity, Relation
 
 
-"""
-gazetteer.csv columns: name, type, parent, alises (| separated)
-Returns (records_by_canonical_name, alias->canonical map).
-"""
 def load_gazetteer(path: str | Path):
+    """Read `gazetteer.csv` into the two lookup tables the place stages need.
+
+    A gazetteer is just a reference table of place names. Columns: `name`, `type`
+    ("city", "state", ...), `parent` (the name of the place containing it), and
+    `aliases` (pipe-separated alternative names).
+
+    Returns `(records_by_canonical_name, alias_to_canonical)`. Both are keyed by
+    LOWERCASED name so lookups are case-insensitive, while each record keeps the
+    original capitalization for display. So the row
+    `New Orleans,city,louisiana,NOLA|N.O.` yields a record under "new orleans"
+    plus two alias entries pointing at it.
+
+    A MISSING FILE is not an error -- two empty dicts are returned, every lookup
+    misses, places stay untyped, and `infer_location_replace` therefore redacts
+    them all. The pipeline still runs, just more conservatively.
+    """
     records: dict[str, dict] = {}
     aliases: dict[str, str] = {}
     path = Path(path)
@@ -42,14 +73,36 @@ def load_gazetteer(path: str | Path):
     return records, aliases
 
 
-"""
-Creates LOCATED_IN edges between location/institution entities per gazetteer.
-"""
 def build_location_edges(
     entities: list[Entity],
     gazetteer: dict[str, dict],
     aliases: dict[str, str] | None = None,
 ) -> list[Edge]:
+    """Resolve each place against the gazetteer and build the LOCATED_IN edges.
+
+    Returns the edges; entity `subtype` and the `location_parent` attribute are
+    set in place as a side effect.
+
+    HOW, in two passes:
+
+      1. IDENTIFY. For each place entity, try every surface form it was written
+         with -- first through the alias map, then against the gazetteer -- and
+         take the first that hits. That resolved name becomes the entity's key in
+         `by_name`. A form that hits nothing falls back to the entity's shortest
+         surface form as the key, so it still appears in the table (untyped).
+         A hit also assigns `subtype` (the gazetteer type, uppercased) and records
+         `location_parent`.
+      2. LINK. Walk the table and emit a LOCATED_IN edge wherever a place's
+         gazetteer parent is ALSO a place mentioned in this transcript. The parent
+         has to be present as an entity for an edge to make sense -- an edge to a
+         node that does not exist would dangle, and `serialize.validate_payload`
+         rejects that.
+
+    `location_parent` is recorded even when no edge is built, which is the point of
+    doing the two passes separately: the parent is then a RULE VALUE the second
+    line can CHECK an LLM proposal against, rather than a gap the LLM fills
+    unchallenged.
+    """
     aliases = aliases or {}
     by_name = {}
     for e in entities:

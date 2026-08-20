@@ -1,9 +1,29 @@
 """
 Scoring one transcript against its gold annotations.
 
-`evaluate_one` runs `graph.pipeline.run_pipeline` -- the same entry point the
-demos and the reports use -- and returns a dict of per-field precision / recall
-/ accuracy plus the second-line action counts.
+PURPOSE
+    `evaluate_one` is the measurement: run the real pipeline on simulated-perfect
+    detections, then compare what came out against the hand-written gold file
+    field by field. Returns one result dict per transcript.
+
+FIT
+    The heart of `evaluation/`. Called by `cli.py`, formatted by `report.py`.
+    Imports `graph.pipeline.run_pipeline` -- the SAME entry point the demos and
+    reports use, so a value the second line confirmed, filled or rejected is
+    scored exactly as a consumer would see it. `config` must be imported before
+    `graph.pipeline` (see that module).
+
+HOW -- two ideas worth knowing before reading
+    1. GOLD IS KEYED BY SURFACE TEXT, with no offsets. One gold row can therefore
+       correspond to SEVERAL pipeline entities -- AGE entities are one-per-mention,
+       so two occurrences of "twelve" are two entities. `entities_for` returns all
+       of them and the individual scorers pick the right one, rather than grading
+       whichever happened to come first.
+    2. ERRORS ARE SPLIT BY DIRECTION, not just counted. A LEAK (should have been
+       redacted, was kept) is unrecoverable; an over-redaction costs only narrative
+       colour. Reporting one number for both would hide the distinction that
+       matters. The same reasoning splits `reject` into "refuted" and "blind" at
+       the bottom of the file.
 """
 
 from __future__ import annotations
@@ -27,9 +47,21 @@ from .metrics import _NoEnt, _acc
 
 def _relation_report(gold_rel: dict, pred_rel: dict, pred_src: dict) -> dict:
     """Score predicted relations against gold and break the result down by which
-    layer produced each edge. `pred_src` maps a (source, target) pair to 'rule' or
-    'llm'. `llm_gain` is the set of gold relations the LLM found that the rules
-    missed -- the recall the LLM path actually buys."""
+    layer produced each edge.
+
+    `gold_rel` and `pred_rel` both map a `(source, target)` pair to its relation
+    detail. `pred_src` maps a pair to 'rule' or 'llm'.
+
+    HOW: SET ARITHMETIC over the pair keys. The intersection is the true positives,
+    `pred - gold` the false positives, `gold - pred` the misses. `detail_ok` then
+    counts how many true positives also got the RELATION WORD right -- finding
+    that two people are related but calling an aunt a sister is a partial credit
+    case, so it is measured separately from recall.
+
+    The same arithmetic is then repeated per LAYER. `llm_gain` -- the gold
+    relations the LLM found that the rules missed -- is the recall the LLM path
+    actually buys, and `llm_fp` is what it costs.
+    """
     gold_set, pred_set = set(gold_rel), set(pred_rel)
     tp = gold_set & pred_set
     detail_ok = sum(1 for k in tp if gold_rel[k] == pred_rel[k])
@@ -55,6 +87,23 @@ def _relation_report(gold_rel: dict, pred_rel: dict, pred_src: dict) -> dict:
 
 
 def evaluate_one(tid: str) -> dict:
+    """Score one transcript end to end and return every metric for it.
+
+    Steps: read the transcript and its gold file -> build simulated-perfect
+    detections -> run the real pipeline (with `trace=True`, so clustering
+    before/after is available) -> score each field group in turn.
+
+    The result dict has one key per scored area -- `cluster`, `rel`, `gender`,
+    `replace`, `dates`, `ages`, `locations`, `owner`, the two redaction groups,
+    `identifying`, `interviewee` and `second_line` -- each holding its own counts
+    and ratios. `report.py` knows that shape.
+
+    The nested helpers exist because they all close over `entities` / `gold` for
+    this one transcript: `ents_of` filters by category, `entities_for` /
+    `entity_for` map a gold surface form back to entities, and `canon_of_entity`
+    maps a clustered entity onto the gold canonical name(s) its mentions belong
+    to -- which is how clustering itself is scored.
+    """
     text = (ROOT / "transcripts" / f"{tid}.txt").read_text(encoding="utf-8")
     gold = json.loads((ROOT / "gold" / f"{tid}.json").read_text(encoding="utf-8"))
 
@@ -75,6 +124,7 @@ def evaluate_one(tid: str) -> dict:
     by_id = {e.entity_id: e for e in entities}
 
     def ents_of(*categories):
+        """Every entity in one of the given categories."""
         return [e for e in entities if e.category in categories]
 
     def entities_for(text_value: str, pool):
@@ -103,6 +153,18 @@ def evaluate_one(tid: str) -> dict:
             form2canon[form.lower()] = p["canonical"]
 
     def canon_of_entity(e):
+        """The set of GOLD canonical names this entity's mentions belong to.
+
+        The basis of clustering scores. Each mention is looked up in the
+        surface-form -> canonical map built above; the resulting set tells us what
+        the entity actually is:
+
+          exactly one canonical  -> a clean cluster;
+          two or more            -> an OVER-MERGE (two real people fused);
+          empty                  -> no mention matched gold (e.g. the interviewee).
+
+        And a canonical appearing in several entities' sets is a SPLIT.
+        """
         votes = {}
         for m in e.mentions:
             c = form2canon.get(m.text.lower())
@@ -238,9 +300,16 @@ def evaluate_one(tid: str) -> dict:
         # matching entity: the gold row asserts "this expression means N years", and
         # the pipeline satisfies it if any span of that expression resolved to N.
         def _val(e):
+            """The age this entity resolved to, or None."""
             return e.attributes.get("value")
 
         def _hit(e):
+            """Does this entity satisfy the gold row, within its stated tolerance?
+
+            Used to pick the BEST candidate rather than the first: the gold row
+            asserts "this expression means N years", and the pipeline satisfies it
+            if any span of that expression resolved to N.
+            """
             v = _val(e)
             return v is not None and abs(v - a["value"]) <= a.get("tolerance", 0)
 
@@ -310,6 +379,17 @@ def evaluate_one(tid: str) -> dict:
     # errors are not interchangeable: a LEAK (should replace, kept) is unrecoverable,
     # an over-redaction costs narrative colour.
     def _redaction(gold_rows, pool, match=None):
+        """Score `replace` on a group of gold rows, splitting errors by direction.
+
+        Shared by the date and age redaction scores. Returns counts of correct
+        decisions plus LEAKS (gold says replace, pipeline kept it -- unrecoverable)
+        and over-redactions (gold says keep, pipeline replaced it -- costs only
+        colour).
+
+        `match` is an optional predicate for picking WHICH candidate entity a gold
+        row is about, needed because gold is text-keyed while AGE entities are
+        per-mention; without it the first candidate is graded.
+        """
         total = correct = leaks = over = 0
         fails = []
         for row in gold_rows:
@@ -454,6 +534,13 @@ def evaluate_one(tid: str) -> dict:
     # and a deterministic checker REFUTED it, or neither layer produced a value at
     # all. Collapsing them hides which half of the pipeline is missing.
     def _label(res):
+        """The action label for the summary, splitting `reject` in two.
+
+        A rejection has two very different causes: the LLM proposed something and a
+        deterministic checker REFUTED it, or neither layer produced a value at all
+        ("blind"). Collapsing them hides which half of the pipeline is missing --
+        refutations mean the checkers are working, blind rows mean nothing tried.
+        """
         if res.action != "reject":
             return res.action
         return "refuted" if res.checks_failed else "blind"

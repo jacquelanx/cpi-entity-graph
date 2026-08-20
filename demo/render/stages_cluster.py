@@ -1,6 +1,16 @@
 """
-Panels for the clustering half of the pipeline: detection,
-name-based clustering, coreference, and the relation edges.
+Panels 01-04: detection, name clustering, coreference, relation edges.
+
+PURPOSE
+    Render the first four stages of the pipeline -- the ones that decide WHO the
+    transcript is about. Each `stage_*` takes a case dict and returns one HTML
+    section.
+
+FIT
+    Sits on `primitives.py`; assembled by `page.transcript_panel`. Reads
+    `case["info"]["pre_coref"]` / `["coref_merges"]`, the trace snapshots
+    `graph/pipeline.py` records when `trace=True`, which is what lets the coref
+    panel show its effect separately from rule-based clustering.
 """
 
 from __future__ import annotations
@@ -11,6 +21,17 @@ from .primitives import _HL, _pname, _relname, section
 
 # ---------- 01 · detect ----------
 def stage_detect(case) -> str:
+    """Panel 01: the transcript with every detected span highlighted by category.
+
+    HOW: walk the detections in transcript order and alternate between plain text
+    and a coloured `<mark>`, using `i` as a cursor to the last position emitted.
+    `if d["start"] < i: continue` skips any span that overlaps one already
+    rendered -- the cursor cannot move backwards, so an overlap would otherwise
+    duplicate text.
+
+    Newlines become `<br>` only at the very end, after all escaping, so the
+    inserted markup is not itself escaped.
+    """
     text, dets = case["text"], sorted(case["dets"], key=lambda d: d["start"])
     counts = {}
     for d in dets:
@@ -42,6 +63,13 @@ def stage_detect(case) -> str:
 
 # ---------- 02 · rule-based clustering ----------
 def stage_cluster(case) -> str:
+    """Panel 02: what RULE-based clustering merged, and what it flagged.
+
+    Reads the `pre_coref` trace snapshot -- the entity list as it stood BEFORE the
+    ML stage -- so the panel shows the rule layer's work in isolation. Two kinds
+    of row: an entity written more than one way (a merge happened) and an entity
+    carrying a review flag (the rule declined to merge and said why).
+    """
     pre = case["info"].get("pre_coref", [])
     n_ment = sum(1 for m in case["mentions"] if m.entity_type in ("PERSON", "NICKNAME"))
     merges = [p for p in pre if len(p["forms"]) > 1]
@@ -66,6 +94,13 @@ def stage_cluster(case) -> str:
 
 # ---------- 03 · coreference (ML) ----------
 def stage_coref(case) -> str:
+    """Panel 03: what the coreference model merged, and what the double gate held apart.
+
+    Shows both outcomes, because a HELD-APART pair is usually the system working
+    correctly rather than a failure -- coref over-links, and the gate exists to
+    catch that. Returns a short placeholder section when coref did not run
+    (`run_coref=False`, or no person entities).
+    """
     info = case["info"]
     if not info.get("coref_ran"):
         return section("03", "Coreference resolution (ML)",
@@ -93,10 +128,16 @@ def stage_coref(case) -> str:
 
 # ---------- 04 · relations ----------
 def stage_relations(case) -> str:
+    """Panel 04: the RELATED_TO edges, with the quote that justifies each one.
+
+    The evidence column is the point: a family tie the reader cannot trace back to
+    a sentence is not reviewable.
+    """
     ents = {e.entity_id: e for e in case["entities"]}
     iv = case["info"]["interviewee"].entity_id
 
     def nm(i):
+        """A display name for an entity id; the interviewee reads as "You"."""
         return "Interviewee" if i == iv else (_pname(ents[i]) if i in ents else i)
 
     rows = []

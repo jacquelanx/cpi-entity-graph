@@ -1,6 +1,24 @@
 """
 Deterministic checkers -- the "verify" half of the unified second line.
 
+PURPOSE
+    Defines the CHECKER PROTOCOL and the shared `CheckContext` every checker
+    reads from. Individual checkers live in the sibling modules, one per field
+    checked (`ages.py`, `dates.py`, `ownership.py`, ...).
+
+FIT
+    The gate between the LLM and the graph. `graph/second_line/policies.py`
+    attaches checkers to fields; `graph/second_line/engine.py` runs them and turns
+    the outcomes into a `Resolution`. Depends only on `graph/text/` (sentence and
+    turn utilities) -- deliberately, so a checker can never reach into the LLM
+    layer.
+
+HOW
+    A checker is a plain callable `(value, ctx) -> CheckOutcome`. `CheckContext`
+    carries everything one might need, computed ONCE per transcript and cached
+    behind properties (sentence spans, speaker turns, the id->entity index), so
+    running dozens of checkers over hundreds of values stays cheap.
+
 A checker answers ONE question about a value the LLM proposed: is it locally
 supportable by the transcript and by the rule tables? Checkers use only
 deterministic evidence (regex, table lookup, arithmetic) so they can refute the
@@ -34,6 +52,14 @@ from ..text.turns import (parse_turns, mask_to_subject, in_subject_turn, role_at
 
 @dataclass(frozen=True)
 class CheckOutcome:
+    """One checker's verdict on one value.
+
+    `name` identifies the checker so a rejection can name itself in the review
+    flag. `passed` and `applicable` together encode the three states described in
+    the module docstring: (True, True) = ok, (False, True) = fail, (True, False) =
+    na. Frozen, because an outcome is a fact about a value and nothing should
+    rewrite it after the fact.
+    """
     name: str
     passed: bool
     detail: str = ""
@@ -41,10 +67,12 @@ class CheckOutcome:
 
 
 def ok(name: str, detail: str = "") -> CheckOutcome:
+    """The checker inspected the value and SUPPORTS it."""
     return CheckOutcome(name, True, detail)
 
 
 def fail(name: str, detail: str = "") -> CheckOutcome:
+    """The checker inspected the value and REFUTES it. `detail` explains why."""
     return CheckOutcome(name, False, detail)
 
 
@@ -60,6 +88,12 @@ class CheckContext:
 
     `entity` is rebound per entity as `resolve_all` walks the graph; everything
     else is shared and read-only.
+
+    The expensive derived views -- sentence spans, speaker turns, the masked
+    subject transcript, the relation context -- are exposed as PROPERTIES that
+    compute on first use and cache (either on the underscore-prefixed fields here
+    or in `graph/text/turns.py`'s own `lru_cache`). So a checker just asks for
+    what it needs and the cost is paid once per transcript, not once per call.
     """
     transcript: str
     entities: list
@@ -85,6 +119,13 @@ class CheckContext:
 
     @property
     def ent_by_id(self) -> dict:
+        """`{entity_id: Entity}` over everything a checker may need to resolve.
+
+        Three sources merged: the live entity list, the interviewee (who is not in
+        that list), and `extra_entities` -- entities a merge folded away but whose
+        ids are still referenced. Rebuilt on each access rather than cached,
+        because entities can be folded away mid-walk.
+        """
         d = {e.entity_id: e for e in self.entities}
         d[self.interviewee.entity_id] = self.interviewee
         d.update(self.extra_entities)
@@ -92,6 +133,7 @@ class CheckContext:
 
     @property
     def sents(self) -> list:
+        """Sentence spans for the transcript, computed once and cached."""
         if self._sents is None:
             self._sents = sentence_spans(self.transcript)
         return self._sents
@@ -111,9 +153,11 @@ class CheckContext:
         return mask_to_subject(self.transcript)
 
     def in_subject_turn(self, pos: int) -> bool:
+        """Was the text at `pos` spoken by the interviewee (or is the turn unknown)?"""
         return in_subject_turn(pos, self.turns)
 
     def role_at(self, pos: int) -> str:
+        """Which speaker role the text at `pos` belongs to."""
         return role_at(pos, self.turns)
 
     def sentence_bounds(self, pos: int) -> tuple[int, int]:
@@ -132,10 +176,16 @@ class CheckContext:
         return max(s, ts), min(e, te) if te > ts else e
 
     def sentence_text(self, pos: int) -> str:
+        """The text of the turn-clipped sentence containing `pos`."""
         s, e = self.sentence_bounds(pos)
         return self.transcript[s:e]
 
     def first_mention(self):
+        """The earliest mention of the entity under resolution, or None.
+
+        Several checkers need "the text this value came from"; for a
+        single-mention entity (an age, a phone number) that is just this.
+        """
         ms = getattr(self.entity, "mentions", None)
         return ms[0] if ms else None
 

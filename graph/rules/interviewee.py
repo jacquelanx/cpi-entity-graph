@@ -1,7 +1,32 @@
 """
 WHICH named person is the interviewee?
 
-Nothing in the pipeline used to ask. `e000` is a synthetic node with no detected
+PURPOSE
+    Decide whether one of the named PERSON entities IS the speaker, and if so fold
+    it into the synthetic interviewee node `e000` so the graph holds one node per
+    human. Interviewee-only de-identification runs entirely off that node, so this
+    is the single most consequential identity decision in the pipeline.
+
+FIT
+    Called once by `graph/pipeline.run_pipeline`, straight after clustering and
+    coref have settled and BEFORE kinship / attributes / identifiers -- because
+    merging changes the entity set, and every later stage must see one interviewee
+    rather than a synthetic node plus a named twin. Depends on
+    `graph/text/turns.py` (who is speaking), `rules/name_matching.py` (name
+    normalization), `rules/kinship.py` (the kin vocabulary), and -- lazily, to
+    avoid an import cycle -- `graph/second_line/` and `graph/checks/`. Its
+    `Resolution` is threaded back into `resolve_all`, so it lands in the ledger
+    like any other field.
+
+HOW
+    The four-step shape every field in this codebase uses (rule -> LLM ->
+    checkers -> apply), detailed below. The load-bearing detail is that
+    `support_for` is used by BOTH the rule and the checker, so the layer that
+    proposes and the layer that verifies cannot disagree about what counts as
+    evidence.
+
+WHY IT EXISTS
+    Nothing in the pipeline used to ask. `e000` is a synthetic node with no detected
 span, and no stage ever linked a named PERSON entity to it -- an assumption that
 holds in both sample transcripts only because their speaker is never named. Real
 transcripts name the speaker constantly:
@@ -141,6 +166,14 @@ def _sentence_around(transcript: str, pos: int) -> str:
 # cannot be introduced as their own relative, so all of them refute. Uses the
 # kinship vocabulary rather than a fresh list so the two cannot drift apart.
 def _kin_before_re():
+    """Build the "possessive + kin word, immediately before here" regex.
+
+    A function rather than a module-level constant because `rules/kinship.py`
+    imports `_MOD`/`KIN` at module load and importing it back at the top of this
+    file would create a cycle. `$`-anchored, so it only matches when the kin
+    phrase sits at the very END of the text handed to it -- i.e. directly before
+    the position being tested.
+    """
     from .kinship import KIN, _MOD
     return re.compile(
         rf"\b(?:my|our|your|his|her|their)\s+{_MOD}{KIN}[\s,]*$", re.I)
@@ -150,7 +183,16 @@ _KIN_BEFORE = None
 
 
 def kin_introduction_before(transcript: str, pos: int) -> str:
-    """The "my <kin>" construction immediately preceding `pos`, else ""."""
+    """The "my <kin>" construction immediately preceding `pos`, else "".
+
+    Used as a REFUTATION: a name introduced as somebody's relative is not the
+    speaker. Only the 60 characters before `pos` are searched, since the phrase
+    has to be adjacent to the name to be about it.
+
+    The `global _KIN_BEFORE` dance is lazy memoization -- the regex is compiled on
+    first use and reused thereafter, which both avoids the import cycle described
+    in `_kin_before_re` and avoids recompiling a large alternation on every call.
+    """
     global _KIN_BEFORE
     if _KIN_BEFORE is None:
         _KIN_BEFORE = _kin_before_re()
@@ -165,6 +207,28 @@ def support_for(entity, transcript: str) -> tuple[str, str]:
 
     kind is one of "label", "self_intro", "address", or "" for no support. Shared
     by the rule proposer and the deterministic checker.
+
+    HOW: reduce the entity to its set of normalized name tokens, then try three
+    constructions in descending order of strength, returning on the first hit.
+
+      (1) LABEL      -- a speaker turn is labelled with this name ("ROSA:"). The
+                        strongest signal: the transcript's own metadata says so.
+      (2) SELF_INTRO -- a first-person introduction inside a SUBJECT turn. Run
+                        against `spoken` (the turn-masked copy of the transcript,
+                        where every character the subject did not say is NUL), so
+                        the interviewer's "I'm Dr. Alvarez" cannot match. Two
+                        patterns, because English puts the name after the cue
+                        ("my name's Rosa") or before it ("Boudreaux is what they
+                        call me"); `next((g for g in m.groups() if g), None)`
+                        picks whichever capture group actually fired.
+      (3) ADDRESS    -- the interviewer says the name TO the subject. Tried twice:
+                        once for titled occurrences found by regex, once for every
+                        detected mention of this entity sitting in an interviewer
+                        turn. Both are gated by `_is_address`.
+
+    A token-set INTERSECTION (`&`) is used for the comparison rather than string
+    equality, so "Rosa" matches "Rosa Boudreaux" -- the same person written two
+    ways.
     """
     turns = parse_turns(transcript)
     spoken = mask_to_subject(transcript)
@@ -261,6 +325,13 @@ def rule_candidate(transcript: str, persons: list) -> tuple[str | None, str, lis
     Conservative by construction. Several distinct people supported by these cues
     means the transcript is not a two-party interview we can read deterministically,
     so the rule abstains and lets the LLM propose against the checkers.
+
+    HOW: collect every person with any support, then decide.
+      * EXACTLY ONE supported -> that is the answer.
+      * SEVERAL supported, but exactly one by a speaker LABEL -> the label wins,
+        since it is transcript metadata rather than an inference from prose.
+      * anything else -> abstain (None), while still returning the full supported
+        list so the caller can flag the ambiguity for review.
     """
     supported = []
     for e in persons:
@@ -322,6 +393,22 @@ def resolve_interviewee_identity(transcript: str, persons: list, interviewee,
     Rules first, LLM second, deterministic checkers third, merge last. Imported
     lazily inside the function to keep `graph.interviewee` free of an import cycle
     with `graph.second_line`.
+
+    HOW, step by step:
+      1. Ask the rule. If it abstained while supporting MORE than one person, flag
+         the interviewee for review -- ambiguity here is exactly what a human
+         should see.
+      2. Ask the LLM, if one is available, for a proposed entity id.
+      3. Hand both answers to `second_line`, which runs the checkers in
+         `graph/checks/interviewee.py` and returns a `Resolution` (the decision
+         plus its provenance). `apply_resolution` writes that onto `e000`.
+      4. If the resolution settled on a value (action FILL, CONFIRM or KEEP),
+         look the entity up and merge it in.
+
+    Note `identity_entity_id` is written here rather than by `apply_resolution`:
+    for every other field a KEEP means the value is already on the entity, but
+    this one is computed rather than read, so it has to be recorded for all three
+    actions.
     """
     from ..second_line import POLICIES, second_line, apply_resolution, FILL, CONFIRM, KEEP
     from ..checks import CheckContext

@@ -2,6 +2,32 @@
 Deterministic verifier for proposed relations -- the CHECKER behind the `relation`
 field in `graph/second_line/policies.py`.
 
+PURPOSE
+    Decide whether the transcript actually SAYS that two people are related, and
+    if so canonicalize the claim into an edge. This is the most involved checker in
+    the codebase, because a relation is a claim about a pair, in a direction, with
+    a vocabulary.
+
+FIT
+    Called through the thin adapter in `graph/checks/relations.py`. Proposals come
+    from `llm_layer/extract.py` (which returns RAW relation claims and decides
+    nothing). The kin vocabulary comes from `checks/relation_words.py`, sentence
+    spans from `graph/text/sentences.py`. `graph/second_line/walk.py` turns an
+    `apply` verdict into an actual `Edge`.
+
+HOW -- three ideas
+    1. VOCABULARY. `_canon_rel` reduces a phrase to its one whitelisted relation
+       word ("twin brother" -> "brother"), and `_KIN_GROUPS` lets the transcript's
+       dialect word corroborate the canonical one ("mama" supports "mother").
+    2. BINDING, not proximity. `_interviewee_support` requires the kin word to be
+       tied to the name by a possessive ("my aunt Maria") or a cleanly-closing
+       appositive ("Rosa, my aunt"), and checks WHOSE possessive it is -- a
+       third-person or named possessor REFUTES a claim about the interviewee
+       ("Carla's mom" is not the speaker's mother).
+    3. THREE-WAY VERDICT. Not just yes/no. `suggest` exists for claims that are
+       plausible but need coreference to prove, which reach a human without
+       becoming edges.
+
 This module used to live in `llm_layer/` and was invoked by the proposer on itself,
 which meant relations were the one field that never passed through the single
 arbitration point: they produced no Resolution, carried no provenance, and did not
@@ -80,11 +106,22 @@ def _canon_rel(detail: str):
 
 
 def _search_terms(canon: str) -> set[str]:
-    """Transcript words that would corroborate `canon` (its kin synonym group)."""
+    """Transcript words that would corroborate `canon` (its kin synonym group).
+
+    "grandmother" expands to the whole dialect group ("granny", "mamaw",
+    "meemaw", ...), so the search finds the word the speaker actually used. A
+    canon with no group (a social tie like "boss") expands to just itself.
+    """
     return set(_GROUP_OF.get(canon, {canon}))
 
 
 def _term_re(terms):
+    """A whole-word regex matching any of `terms`, longest first, plural tolerated.
+
+    The `(?<![a-z])` / `(?![a-z])` lookarounds are the word-boundary test, and
+    trailing `s?` allows the plural. Longest-first ordering matters: without it
+    "grandmother" could be matched as "mother".
+    """
     # allow an optional plural 's' ("twin brothers", "my grandparents")
     alt = "|".join(re.escape(t) for t in sorted(terms, key=len, reverse=True))
     return re.compile(r"(?<![a-z])(?:" + alt + r")s?(?![a-z])", re.I)
@@ -92,6 +129,14 @@ def _term_re(terms):
 
 @dataclass
 class _Verdict:
+    """The outcome of verifying one relation claim.
+
+    On `apply` and `suggest` the remaining fields carry the CANONICALIZED claim:
+    `source`/`target` in the pipeline's preferred direction (the interviewee is
+    always forced to be the source), `detail` as the canonical relation word, and
+    `evidence` re-grounded to a single nearby sentence rather than whatever the
+    model quoted. On `reject` they are empty.
+    """
     action: str                 # "apply" | "suggest" | "reject"
     source: str = ""
     target: str = ""
@@ -100,9 +145,22 @@ class _Verdict:
 
 
 class RelationContext:
-    """Precomputed transcript structure shared across all candidate checks."""
+    """Precomputed transcript structure shared across all candidate checks.
+
+    Built once per transcript (cached on the `CheckContext` by
+    `checks/relations.relation_context`) because every verification needs the same
+    three things: the sentence spans, an id->entity index, and the offsets of every
+    named person mention.
+    """
 
     def __init__(self, transcript, persons, interviewee):
+        """Index the transcript for verification.
+
+        `persons` excludes the interviewee, who is added to `ent_by_id` separately
+        and deliberately kept OUT of `person_spans` -- `person_spans` is used to
+        detect a competing person between a kin word and a name, and the speaker is
+        not a competitor for their own relations.
+        """
         self.transcript = transcript
         self.interviewee = interviewee
         self.sents = _sentences(transcript)
@@ -113,21 +171,47 @@ class RelationContext:
                              for e in persons for m in e.mentions]
 
     def sentence_of(self, pos: int) -> int:
+        """Index of the sentence containing `pos` (last sentence as a fallback)."""
         for i, (s, e) in enumerate(self.sents):
             if s <= pos < e:
                 return i
         return len(self.sents) - 1
 
     def sentence_text(self, pos: int) -> str:
+        """The single sentence containing `pos`, stripped.
+
+        This is how evidence gets RE-GROUNDED: whatever the model quoted is
+        discarded in favour of the one real sentence around the mention, which
+        kills run-on quotes spanning half an answer.
+        """
         s, e = self.sents[self.sentence_of(pos)]
         return self.transcript[s:e].strip()
 
     def person_between(self, a: int, b: int, exclude_id: str) -> bool:
+        """Is some OTHER named person mentioned between offsets `a` and `b`?
+
+        The guard that keeps a kin word bound to the right name. In "my aunt Maria
+        and her friend Rosa", the word "aunt" must not reach past Maria to Rosa;
+        finding an intervening person means the binding is broken.
+        """
         return any(a <= s < b and eid != exclude_id
                    for (s, e, eid) in self.person_spans)
 
 
 def _possessor_before(transcript: str, floor: int, rel_start: int) -> str:
+    """WHOSE relative is this? Classify the possessive just before a kin word.
+
+    Returns one of:
+      "first"   -- "my"/"our": the relation belongs to the SPEAKER.
+      "third"   -- "his"/"her"/"their": it belongs to somebody else.
+      "named"   -- "Carla's": it belongs to that named person.
+      "neutral" -- no possessive found.
+
+    This single distinction is what separates "my mom" from "Carla's mom" -- the
+    same kin word, opposite conclusions about the interviewee. `floor` clamps the
+    lookback to the start of the sentence so a possessive from the previous
+    sentence cannot be borrowed.
+    """
     pre = transcript[max(floor, rel_start - 18):rel_start]
     if _POSS_FIRST.search(pre):
         return "first"
@@ -140,7 +224,25 @@ def _possessor_before(transcript: str, floor: int, rel_start: int) -> str:
 
 def _interviewee_support(named, canon: str, ctx: RelationContext) -> str:
     """Is a kin/social tie between the interviewee and `named` locally provable?
-    Returns 'supported' | 'refuted' | 'weak'."""
+
+    Returns 'supported' | 'refuted' | 'weak'. "Weak" means nothing was found
+    either way, which becomes a `suggest`.
+
+    HOW: for each mention of the named person, try two constructions.
+
+      (1) KIN WORD BEFORE THE NAME -- "my aunt Maria". Search the ~60 characters
+          before the name (clipped to the sentence) for a corroborating term and
+          take the NEAREST one. Then require that no other person sits between it
+          and the name, and classify its possessive: "my"/"our" supports the
+          claim, "his"/"her"/"Carla's" REFUTES it, and a bare kin word is accepted
+          only if a first-person cue appears earlier in the same sentence.
+      (2) APPOSITIVE AFTER THE NAME -- "Rosa, my aunt" / "Rosa, who is my aunt".
+          Same possessive logic: first person supports, third person refutes.
+
+    A single refutation anywhere is remembered and returned even if a later
+    mention was merely weak -- a claim the text contradicts once should not be
+    rescued by a vaguer passage elsewhere.
+    """
     terms = _search_terms(canon)
     term_re = _term_re(terms)
     apposite = re.compile(
@@ -180,11 +282,18 @@ def _interviewee_support(named, canon: str, ctx: RelationContext) -> str:
 
 
 def _mentions_in(ent, ss: int, se: int) -> bool:
+    """Does this entity have a mention starting inside the span `[ss, se)`?"""
     return any(ss <= m.start < se for m in ent.mentions)
 
 
 def _pair_evidence(se_ent, te_ent, canon: str, ctx: RelationContext):
-    """A single sentence holding BOTH people and a corroborating rel word."""
+    """A single sentence naming BOTH people AND a corroborating relation word.
+
+    The test for a person<->person relation (neither side being the speaker).
+    Weaker than `_interviewee_support`, which can inspect possessives, but it is
+    the strongest signal available: "Sarah's brother Danny" puts both names and
+    the word in one sentence. Returns that sentence as evidence, or None.
+    """
     term_re = _term_re(_search_terms(canon))
     for (ss, se) in ctx.sents:
         seg = ctx.transcript[ss:se]
@@ -194,6 +303,28 @@ def _pair_evidence(se_ent, te_ent, canon: str, ctx: RelationContext):
 
 
 def verify_relation(src_eid, tgt_eid, rel, evidence, ctx: RelationContext) -> _Verdict:
+    """Verify one proposed relation and return an `apply` / `suggest` / `reject` verdict.
+
+    The entry point. Steps, in order:
+
+      1. RESOLVE both ends; a missing end, or both ends being the same entity, is
+         an immediate reject.
+      2. DROP CELEBRITY EDGES. A public figure at either end is rejected -- the
+         speaker's admiration for a union leader is not a family tie.
+      3. CANONICALIZE the relation word. A word outside the kin/social vocabulary
+         cannot be corroborated by any rule, so it becomes a `suggest` tagged with
+         the raw word (a human can judge it) rather than being silently dropped --
+         unless there is no usable word at all.
+      4. IF ONE END IS THE INTERVIEWEE, ask `_interviewee_support`: supported ->
+         apply, refuted -> reject, weak -> suggest. The direction is canonicalized
+         so the interviewee is always the SOURCE, which keeps the graph's
+         speaker-centred edges uniform.
+      5. OTHERWISE (person <-> person) look for a sentence naming both plus the
+         relation word: found -> apply, not found -> suggest.
+
+    Evidence is always re-grounded to a real sentence, falling back to the
+    proposer's quote only when the entity has no mentions to anchor on.
+    """
     se = ctx.ent_by_id.get(src_eid)
     te = ctx.ent_by_id.get(tgt_eid)
     if se is None or te is None or se is te:

@@ -1,5 +1,28 @@
 """
-LLM use #4: windowed judgment over direct identifiers.
+Windowed judgment over direct identifiers: `owner`, `kind`, `identifying`.
+
+PURPOSE
+    Add the CONTEXTUAL judgment a regex cannot make about an identifier span:
+    whose is it, what is it really, and (for an occupation) is it rare enough to
+    single somebody out. Returns proposals; mutates nothing.
+
+FIT
+    The third of the proposal passes `graph/pipeline.run_pipeline` runs. The rule
+    side is `graph/rules/identifiers.py` plus
+    `graph/pipeline._link_interviewee_pii`; the verification side is
+    `graph/checks/identifiers.py` and `graph/checks/ownership.py`. Reuses the
+    windowing helpers from `extract.py`.
+
+HOW
+    Same tagged-window and voting design as `extract.py`, with `[ID2 ...]` tags
+    instead of `[P3 ...]`. One call per window that actually contains an
+    identifier -- identifiers are sparse, so this is a handful of calls per
+    transcript rather than one per window.
+
+NOTE ON A STALE LINE BELOW
+    The paragraph beginning "Both are written as conservative suggestions" describes
+    how this module used to behave. It no longer writes anything: every field is
+    returned as a proposal and decided in `graph/second_line/`.
 
 The deterministic layer (`graph/rules/identifiers.py`) already types/normalizes PHONE /
 EMAIL / SSN_OR_ID / USERNAME_HANDLE / OCCUPATION. This pass adds the *contextual*
@@ -55,6 +78,13 @@ _KIND_TO_CAT = {"phone": "PHONE", "email": "EMAIL", "ssn": "SSN_OR_ID",
 
 
 def _tagged(transcript, ws, we, roster):
+    """`transcript[ws:we]` with each rostered identifier wrapped as `[ID<n> text]`.
+
+    So "call 555-0143" becomes "call [ID2 555-0143]" and the model can answer per
+    id. As in `extract._tagged_window`, the brackets are inserted BACKWARDS through
+    the text so each insertion does not invalidate the offsets still to be
+    processed.
+    """
     marks = [(m.start, m.end, gid) for gid, e in roster for m in e.mentions
              if ws <= m.start < we]
     seg = transcript[ws:we]
@@ -76,6 +106,15 @@ def identifier_judge_pass(transcript: str, entities: list, llm) -> dict:
     stops the model flagging "miners" in a coal-mining interview: on the sample
     transcripts it returned True for seven of nine occupations, and nothing could
     refute it.
+
+    HOW: number every identifier entity (ID1, ID2, ...), walk the same
+    sentence-aligned windows `extract_pass` uses but SKIP any window containing no
+    identifier, and tally the answers. Only recognized values are counted -- an
+    `owner` outside {interviewee, other}, a non-boolean `identifying`, or a `kind`
+    outside the table is silently dropped rather than proposed.
+
+    `res.get("identifiers", res)` tolerates two reply shapes: the model may wrap
+    its answer in an "identifiers" key or return the id map at the top level.
     """
     proposals: dict = {}
     if llm is None or not llm.available():
@@ -114,6 +153,7 @@ def identifier_judge_pass(transcript: str, entities: list, llm) -> dict:
                 votes[e.entity_id]["kind"][kind] += 1
 
     def propose(e, field, counter):
+        """Turn a vote tally into one proposal; two agreeing windows means "high"."""
         if not counter:
             return
         value, n = counter.most_common(1)[0]

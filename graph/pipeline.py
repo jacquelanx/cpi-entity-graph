@@ -1,19 +1,48 @@
 """
 Orchestrator that wires the individual graph stages together.
-Given a transcript and its DETECTED mentions (from the detection stage),
-it runs every stage and returns the full (entities, edges) the surrogate 
-generator will consume:
 
-merge_person_mentions  (part 1 clustering)
-apply_coref            (part 2 clustering, ML)   -- optional
-extract_kinship        (RELATED_TO edges)
-infer_person_attributes
-build_location_edges   (LOCATED_IN edges, gazetteer)
-resolve_date_entity / resolve_age_entity
-age_date_constraints   (STATED_WITH edges)
+PURPOSE
+    `run_pipeline` is the one function that turns a transcript plus its DETECTED
+    mentions into the finished `(entities, edges, info)` triple the surrogate
+    generator consumes. It owns stage ORDER and nothing else -- every actual
+    inference lives in `graph/rules/`, every verification in `graph/checks/`, and
+    every rule-vs-LLM decision in `graph/second_line/`.
 
-Non-person mentions (LOCATION / DATE_* / AGE) are grouped into entities here,
-since the per-mention modules only clustered PERSON/NICKNAME.
+FIT
+    The middle of the flow: `graph/loader.py` (or `demo/cases.py`) feeds it,
+    `graph/serialize.py` writes what it returns. Its callers are
+    `scripts/build_graph.py`, `demo/cases.py` (behind both HTML reports),
+    `evaluation/scoring.py` and `tests/test_invariants.py`. It imports from every
+    subpackage of `graph/`, plus `llm_layer` -- but only lazily, inside the
+    branches that need it, so the whole pipeline runs with no LLM installed.
+
+HOW -- STAGE ORDER, which is the real content of this file
+    1. CLUSTER PEOPLE   merge_person_mentions -> apply_alias_cues -> apply_coref.
+                        Decide which mentions are the same person, first by name
+                        containment, then by explicit alias cues, then by an ML
+                        coreference model (optional).
+    2. IDENTIFY SPEAKER resolve_interviewee_identity. Must run AFTER clustering
+                        has settled, so later stages see ONE interviewee rather
+                        than a synthetic node plus a named twin.
+    3. RELATE + DESCRIBE extract_kinship (RELATED_TO edges), then the attribute
+                        inferences (gender / name parts / role / ethnicity).
+                        Kinship first, because `role` reads the kin edges.
+    4. WORLD            locations (gazetteer + LOCATED_IN), dates, ages,
+                        identifiers; then age_date_constraints (STATED_WITH) and
+                        the interviewee's own PII (ATTRIBUTE_OF).
+    5. ARBITRATE        resolve_all. Every field the LLM proposed is checked
+                        against the rule layer and the deterministic checkers;
+                        this is where provenance, the ledger and the blocking
+                        list come from. Runs even with no LLM, so the output
+                        SHAPE never depends on whether a model was available.
+
+    Non-person mentions (LOCATION / DATE_* / AGE / INSTITUTION) are grouped into
+    entities here by `_simple_entities`, because the per-mention rule modules only
+    cluster PERSON/NICKNAME.
+
+    The LLM is strictly a PROPOSER and the dependency is one-way: `llm_layer`
+    never imports `graph`, and nothing it returns is written to an entity without
+    passing through `resolve_all`.
 """
 
 
@@ -128,6 +157,7 @@ def _ambiguous_merge_claims(transcript, persons, llm):
     from llm_layer import adjudicate_same_person
 
     def tokens(e):
+        """Every normalized name token across all of this entity's surface forms."""
         toks = set()
         for f in e.sorted_mentions:
             toks |= set(normalize(f))
@@ -172,24 +202,40 @@ def _folded(records):
     return {r["b"]: r["folded"] for r in records if r.get("folded") is not None}
 
 
-"""
-One entity per distinct (lowercased) surface form within `categories`.
-Used for LOCATION / DATE / AGE, which the clustering modules don't group.
-
-`group_by_text=False` gives one entity per MENTION instead. AGE uses it, because an
-age is a fact about ONE moment and one person, not a repeated identifier: grouping
-by text made "twelve" in "the water came up twelve feet" and "my daughter Trang was
-maybe twelve" a single entity with a single `owner`, and since `checks/ownership`
-requires UNANIMITY across an entity's mentions, the two contexts refuted each other
-and the age came out unattributable and BLOCKING. The same collapse hits any
-transcript where two people are the same age.
-
-Text grouping is kept for LOCATION and DATE, where it is load-bearing: two
-mentions of "Biloxi" are one place and must get one surrogate, and two mentions of
-"1975" must take one date shift.
-"""
 def _simple_entities(transcript_id, mentions, categories, prefix,
                      group_by_text=True):
+    """Group non-person mentions into entities by surface text (the cheap clustering).
+
+    People need real clustering -- "Maria" and "Aunt Maria" are one person, and
+    working that out takes name matching, alias cues and a coreference model.
+    Places, dates and ages do not: two mentions of the literal string "Biloxi" are
+    the same place, so grouping by lowercased text is both sufficient and exactly
+    right. This function is that shortcut.
+
+    HOW: bucket every mention whose `entity_type` is in `categories` into a dict
+    keyed by lowercased text, then emit one `Entity` per bucket. The buckets are
+    ordered by their EARLIEST mention offset, so entity numbering follows the
+    transcript (`..._L001` is the first place mentioned, not an arbitrary one) and
+    is stable across runs. `prefix` picks the id letter -- "L" for locations, "D"
+    for dates, "A" for ages -- so an id says at a glance what kind of node it is.
+
+    One entity per distinct (lowercased) surface form within `categories`.
+    Used for LOCATION / DATE / AGE, which the clustering modules don't group.
+
+    `group_by_text=False` gives one entity per MENTION instead (the key becomes the
+    mention's index, which is unique, so no two mentions ever share a bucket). AGE
+    uses it, because an age is a fact about ONE moment and one person, not a
+    repeated identifier: grouping by text made "twelve" in "the water came up twelve
+    feet" and "my daughter Trang was maybe twelve" a single entity with a single
+    `owner`, and since `checks/ownership` requires UNANIMITY across an entity's
+    mentions, the two contexts refuted each other and the age came out
+    unattributable and BLOCKING. The same collapse hits any transcript where two
+    people are the same age.
+
+    Text grouping is kept for LOCATION and DATE, where it is load-bearing: two
+    mentions of "Biloxi" are one place and must get one surrogate, and two mentions
+    of "1975" must take one date shift.
+    """
     groups: dict[str, list] = {}
     for i, m in enumerate(mentions):
         if m.entity_type in categories:
@@ -207,13 +253,34 @@ def _simple_entities(transcript_id, mentions, categories, prefix,
     return ents
 
 
-"""
-Return (entities, edges, info). `info` carries the interviewee entity,
-the coref flag, and any ambiguous person mentions.
-    """
 def run_pipeline(transcript_id, transcript, mentions, metadata=None,
                  gazetteer_path="data/gazetteer.csv", run_coref=True, trace=False,
                  llm=None):
+    """Run every graph stage over one transcript and return the finished graph.
+
+    Returns `(entities, edges, info)`:
+      * `entities` -- every node, starting with the interviewee (`..._e000`),
+        each carrying its mentions, inferred `attributes` and `provenance`.
+      * `edges`    -- RELATED_TO / LOCATED_IN / STATED_WITH / ATTRIBUTE_OF links,
+        including the relation edges that survived arbitration.
+      * `info`     -- the run's metadata: the interviewee entity, whether coref
+        and the LLM ran, the interview date, the full arbitration `ledger`, and
+        `blocking` (the fields a human must settle before surrogates are minted).
+
+    Parameters worth knowing:
+      `metadata`      optional dict; `interview_date` anchors relative dates
+                      ("two years ago") and is required for them to resolve.
+      `run_coref`     set False to skip the ML coreference stage.
+      `trace`         adds before/after clustering snapshots to `info`, which is
+                      what lets the HTML reports show each stage's effect
+                      separately. Costs nothing when off.
+      `llm`           an `llm_layer` client. `None` plus `KG_USE_LLM=1` in the
+                      environment builds the default one; otherwise the whole run
+                      is rules-only. Either way `resolve_all` runs, so the return
+                      shape is identical.
+
+    See the module docstring for the stage order and why it is that order.
+    """
     metadata = metadata or {}
     interview_date = None
     if metadata.get("interview_date"):
@@ -342,6 +409,11 @@ def run_pipeline(transcript_id, transcript, mentions, metadata=None,
         proposals: dict = {}
 
         def _merge(more):
+            """Fold one pass's proposals into the shared `proposals` dict.
+
+            Merged per ENTITY so three passes proposing different fields for the
+            same entity accumulate rather than overwrite each other.
+            """
             for eid, fields in (more or {}).items():
                 proposals.setdefault(eid, {}).update(fields)
 

@@ -1,10 +1,41 @@
 """
-Part 1 of Clustering. The following rules are applied:
-1. Exact normalized match          "Maria" == "maria" == "Aunt Maria"(stripped)
-2. Token containment               "Maria" is a token of "Maria Rodriguez"
-IMPORTANT: a short form merges into a long form ONLY if exactly one
-candidate exists. If both "Maria Rodriguez" and "Maria Hayes" are present,
-just "Maria" stays unmerged and gets flagged for review.
+Clustering, part 1: group PERSON/NICKNAME mentions by NAME.
+
+PURPOSE
+    Decide which name mentions refer to the same human, using the names alone.
+    "Maria", "Aunt Maria" and "Maria Rodriguez" become one entity; "Maria
+    Rodriguez" and "Maria Hayes" stay two. Also exports the shared text
+    utilities other stages need for names -- `normalize` and `split_name_parts`.
+
+FIT
+    The first inference stage `graph/pipeline.run_pipeline` calls, before
+    `aliases.py` (explicit "we called her Glo" cues) and `coref.py` (the ML
+    coreference model, "part 2"). Everything downstream depends on it:
+    kinship edges, attributes and identifiers are all attached to the entities
+    it creates. `normalize` and `split_name_parts` are imported by
+    `rules/attributes.py`, `rules/interviewee.py`, `rules/aliases.py`,
+    `checks/names.py` and `pipeline.py`, so the definition of "the same name"
+    lives in exactly one place.
+
+HOW -- two rules, applied in this order:
+    1. EXACT NORMALIZED MATCH   "Maria" == "maria" == "Aunt Maria" (stripped)
+    2. TOKEN CONTAINMENT        "Maria" is a token of "Maria Rodriguez"
+
+    Both are applied through a UNION-FIND structure (see `_UnionFind`), which is
+    what lets a chain of pairwise merges settle into groups without any ordering
+    subtleties.
+
+    IMPORTANT: a short form merges into a long form ONLY if exactly one candidate
+    exists. If both "Maria Rodriguez" and "Maria Hayes" are present, just "Maria"
+    stays unmerged and gets flagged for review -- an over-merge fuses two real
+    people and is unrecoverable, whereas an under-merge is merely incomplete.
+
+    Two extra safeguards refine that:
+      * HONORIFICS hold names apart. "Miss Rosa" and "Rosa" do not exact-match,
+        because a title signals social distance and they may be two people.
+      * When an LLM is available it can VETO a containment merge it is confident
+        is wrong (uncle "Bill" vs foreman "Bill Ratliff"). It can only ever
+        prevent a merge, never cause one, so rules-only recall is preserved.
 """
 
 
@@ -63,8 +94,14 @@ HONORIFIC_TITLES = {
 }
 
 
-"""The honorific title leading a mention ('Miss Rosa' -> 'miss'), else ''."""
 def _honorific(text: str) -> str:
+    """The honorific title in a mention ("Miss Rosa" -> "miss"), else "".
+
+    Scans the mention's tokens for the first word that is a known honorific,
+    stripping surrounding punctuation so "Dr." matches "dr". Used as part of the
+    exact-match key for bare given names, so a titled form and a bare form are
+    not assumed to be the same person.
+    """
     for raw in re.split(r"[\s,]+", text):
         t = raw.strip("'\".()-").lower()
         if t in HONORIFIC_TITLES:
@@ -76,21 +113,41 @@ def _honorific(text: str) -> str:
 _SPELLOUT = re.compile(r"^(?:[A-Za-z][\s\-\.]){2,}[A-Za-z]\.?$")
 
 
-"""
-Converts spelled out name to regular name; eg. "S-A-M" to "sam"
-"""
 def collapse_spellout(text: str) -> str:
+    """Collapse a letter-by-letter spelling into the word it spells.
+
+    Interview subjects spell surnames out loud for the transcriber, so the text
+    contains "H-A-Y-E-S" or "H A Y E S" where the name is "hayes". Left alone,
+    that form shares no token with "Hayes" and would cluster as a separate
+    person. If `_SPELLOUT` matches -- three or more single letters separated by
+    spaces, hyphens or dots -- the separators are removed and the result
+    lowercased; otherwise the text is returned untouched.
+    """
     if _SPELLOUT.match(text.strip()):
         return re.sub(r"[\s\-\.]", "", text).lower()
     return text
 
 
-"""
-Takes a span and makes it lowercase; also strips punctuation and prefix words.
-Returns name tokens in a tuple (list may be empty). Example usage:
-"my aunt, Dr. Sarah Hayes" --> ("sarah", "hayes")
-"""
 def normalize(text: str) -> tuple[str, ...]:
+    """Reduce a surface form to just its NAME tokens, lowercased.
+
+    This is the canonical form the whole pipeline compares names by, so two
+    mentions of the same person collapse to the same tuple no matter how they
+    were introduced:
+
+        "my aunt, Dr. Sarah Hayes"  ->  ("sarah", "hayes")
+        "Aunt Maria"                ->  ("maria",)
+        "my older sister"           ->  ()            # no name at all
+
+    HOW: expand any spelled-out name, split on whitespace/commas/periods, strip
+    quotes and brackets off each token, lowercase it, and drop everything in
+    `KINSHIP_AND_TITLES` (possessives, titles, kin words, descriptive modifiers).
+    What remains is the name.
+
+    Returns a TUPLE rather than a list for two reasons: tuples are immutable, and
+    they are hashable, so a normalized name can be used directly as a dict key --
+    which is exactly how the exact-match pass below indexes groups.
+    """
     text = collapse_spellout(text)
     tokens = []
     for raw in text.replace(",", " ").replace(".", " ").split():
@@ -158,25 +215,59 @@ def split_name_parts(text: str) -> tuple[str | None, str | None]:
     return None, None
 
 
-"""
-Implements an union find to later find/merge mention indices. Supports two
-functions: find (an element in a group0 and union (two groups).
-"""
 class _UnionFind:
-    # initially every element is its own group
-    # eg. UnionFind(5) produces [0, 1, 2, 3, 4] --> {0} {1} {2} {3} {4}
+    """Union-find (disjoint-set) over mention indices -- the clustering engine.
+
+    THE IDEA: we need to group N mentions, but the evidence arrives as PAIRS
+    ("mention 3 and mention 7 are the same person"). Union-find turns a stream of
+    such pairs into groups without us tracking the groups ourselves.
+
+    Every element starts alone. `union(a, b)` declares two elements to be in the
+    same group; `find(x)` returns the group's REPRESENTATIVE -- an arbitrary but
+    stable member id -- so two elements are in the same group exactly when their
+    `find` results are equal. Order does not matter, and merges compose for free:
+    union(A,B) then union(B,C) leaves A, B and C all in one group without anyone
+    noticing that A and C were never compared directly.
+
+    Concretely, for "Maria" (0), "Maria Rodriguez" (1), "Aunt Maria" (2): after
+    union(0,1) and union(2,0), all three share one representative, so they become
+    one entity.
+
+    Implemented as a `parent` array where each element points at another element
+    and a group's representative is the one that points at itself. See `find` for
+    the flattening trick that keeps those chains short.
+    """
     def __init__(self, n: int):
+        """Start with `n` elements, each alone in its own group.
+
+        Every element is its own parent, so `UnionFind(5)` gives
+        `parent = [0, 1, 2, 3, 4]`, i.e. the groups {0} {1} {2} {3} {4}.
+        """
         self.parent = list(range(n))
 
-    # say parent = [0,0,0,3,3] --> this means node 0 has parent = 0,
-    # node 1 has parent 0,... node 4 has parent 3, node 5 has parent 3
     def find(self, x: int) -> int:
+        """The representative of `x`'s group, shortening the path on the way.
+
+        Walks parent pointers until it reaches the element that points at itself.
+        With `parent = [0, 0, 0, 3, 3]`, elements 0, 1 and 2 all resolve to 0,
+        while 3 and 4 resolve to 3 -- two groups.
+
+        The assignment inside the loop is PATH HALVING: as it walks, each visited
+        element is re-pointed at its grandparent, so long chains collapse toward
+        the representative and later lookups are near-constant time. It changes
+        the shape of the tree, never which group anything is in.
+        """
         while self.parent[x] != x:
             self.parent[x] = self.parent[self.parent[x]]
             x = self.parent[x]
         return x
 
     def union(self, a: int, b: int) -> None:
+        """Merge the groups containing `a` and `b` into one.
+
+        Points `a`'s representative at `b`'s, so every member of `a`'s old group
+        now resolves to `b`'s representative. Already-joined elements are a no-op.
+        """
         self.parent[self.find(a)] = self.find(b)
 
 
@@ -194,6 +285,11 @@ def _llm_says_distinct(persons, uf, bare_root, cand_root, transcript, llm):
     call inside the clustering rule. `merge_person_mentions` now emits a
     `same_person` record for it (see the module docstring in
     `graph/second_line/`).
+
+    The two throwaway `Entity` objects exist only to give the adjudicator the
+    same shape it takes everywhere else; they are never added to the graph. Their
+    mentions are collected by asking `uf.find(j)` for every mention index and
+    keeping those whose representative matches the group in question.
     """
     from llm_layer import adjudicate_same_person
     bare = Entity(entity_id="_bare", category="PERSON",
@@ -205,31 +301,56 @@ def _llm_says_distinct(persons, uf, bare_root, cand_root, transcript, llm):
     return veto, (v or {})
 
 
-"""
-Group PERSON/NICKNAME mentions into entities. Returns a tuple of
-(person_entities, ambiguous_mentions_left_unmerged, veto_records).
-
-When `transcript` and `llm` are supplied and the LLM is up, a bare given name that
-would merge into a SINGLE full-name candidate is first adjudicated: the merge is
-vetoed only if the LLM is confident the two are different people (e.g. uncle "Bill"
-vs. foreman "Bill Ratliff"). With no LLM this is a no-op -- the rule merges as before.
-
-`veto_records` are `same_person` merge records for the pairs that adjudication kept
-apart: one `source="rule"` record with `applied=False` (the containment rule DID want
-to merge them) and one `source="llm"` record with `value=False` (the model
-disagreed). `graph.second_line._resolve_merges` arbitrates the pair, so the split
-gets a Resolution, provenance and a ledger row -- which an LLM decision this
-consequential should never have gone without.
-"""
 def merge_person_mentions(transcript_id: str, mentions: list[Mention],
                           transcript: str | None = None, llm=None
                           ) -> tuple[list[Entity], list[Mention], list[dict]]:
+    """Group PERSON/NICKNAME mentions into person entities.
+
+    Returns `(person_entities, ambiguous_mentions_left_unmerged, veto_records)`.
+
+    HOW, in five passes over the same union-find structure:
+
+      1. NORMALIZE      every mention to its name tokens, and note any honorific.
+      2. EXACT MATCH    index mentions by normalized name and union the repeats.
+                        For a distinctive multi-token name the name alone is the
+                        key. For a BARE given name the key also includes the
+                        honorific, so "Miss Rosa" and "Rosa" land in different
+                        groups rather than silently fusing two people. A bare name
+                        seen with more than one honorific profile is recorded in
+                        `collision_keys` and flagged for review later.
+      3. CONTAINMENT    for each single-token name, find the multi-token groups
+                        containing that token. Exactly one candidate -> merge
+                        ("Maria" into "Maria Rodriguez"). More than one -> leave it
+                        alone and record it as ambiguous. Zero -> nothing to do.
+      4. BUILD ENTITIES turn the final groups into `Entity` objects, numbered by
+                        first appearance in the transcript so ids are stable, and
+                        attach the review flags from passes 2 and 3.
+      5. VETO RECORDS   emit the merge records described below.
+
+    THE LLM VETO (only when `transcript` and a live `llm` are supplied): before a
+    single-candidate containment merge, the adjudicator is asked whether the two
+    groups are really the same person. The merge is vetoed ONLY on a confident
+    "different" verdict (e.g. uncle "Bill" vs foreman "Bill Ratliff"); unsure, same,
+    or no answer all allow it. With no LLM this is a no-op -- the rule merges as
+    before. `veto_memo` caches the verdict per (bare group, candidate group) pair so
+    a name mentioned ten times costs one model call.
+
+    `veto_records` are `same_person` merge records for the pairs that adjudication kept
+    apart: one `source="rule"` record with `applied=False` (the containment rule DID want
+    to merge them) and one `source="llm"` record with `value=False` (the model
+    disagreed). `graph.second_line._resolve_merges` arbitrates the pair, so the split
+    gets a Resolution, provenance and a ledger row -- which an LLM decision this
+    consequential should never have gone without.
+
+    Note `vetoed_pairs` is keyed by union-find ROOT rather than entity id, because
+    entity ids do not exist until pass 4 has run.
+    """
     persons = [m for m in mentions if m.entity_type in ("PERSON", "NICKNAME")]
     if not persons:
         return [], [], []
 
     norm = [normalize(m.text) for m in persons]  # eg. ("sarah", "hayes")
-    canon = norm
+    canon = norm                                 # alias; `canon` is the name read below
     honor = [_honorific(m.text) for m in persons]  # "" unless a title leads it
     uf = _UnionFind(len(persons))  # just initialize, not merged yet
 
@@ -263,7 +384,10 @@ def merge_person_mentions(transcript_id: str, mentions: list[Mention],
             multi_groups.setdefault(uf.find(i), set()).update(key)
 
     llm_on = transcript is not None and llm is not None and llm.available()
-    withheld_roots: set[int] = set()      # bare groups the LLM judged distinct
+    # Bare groups the LLM judged distinct. Recorded but never read -- the actual
+    # effect of a veto is the `continue` below (the merge simply does not happen)
+    # plus the record in `vetoed_pairs`. Kept as a running note of what was withheld.
+    withheld_roots: set[int] = set()
     veto_memo: dict[tuple, bool] = {}
     # bare_root -> (candidate_root, verdict), for the records emitted below. Kept
     # keyed by ROOT because entity ids do not exist until the groups are built.

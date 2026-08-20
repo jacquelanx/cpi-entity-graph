@@ -1,6 +1,23 @@
 """
 Evaluation harness for the knowledge-graph stage.
 
+PURPOSE
+    Answer "how good is this stage?" with numbers: precision / recall / accuracy
+    per transcript and in aggregate, broken out by what the pipeline decides
+    (clustering, relations, gender, redaction, dates, ages, places).
+
+FIT
+    A CONSUMER of `graph/`, not part of it -- `scripts/eval.py` is the entry
+    point, and `graph.pipeline.run_pipeline` is called through the same front door
+    the demos and reports use. Reads the hand-written gold annotations in
+    `samples/gold/`.
+
+HOW
+    Simulates a PERFECT DETECTOR: instead of running a real detector, the gold
+    surface forms are located in the transcript and turned into detection spans.
+    That isolates this stage -- a miss in the numbers below is this stage's miss,
+    not the detector's -- at the cost of making every figure an UPPER BOUND.
+
 It simulates a perfect detector from the gold annotations in `samples/gold/` and
 runs those spans through `graph.pipeline.run_pipeline` -- THE SAME entry point
 the demos and the reports use -- so a value the second line CONFIRMED, FILLED

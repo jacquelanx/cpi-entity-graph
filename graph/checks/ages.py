@@ -1,6 +1,25 @@
 """
 Deterministic checkers for AGE `value` and `replace_age`.
 
+PURPOSE
+    Two related gates. On `value`: is this number actually somebody's age, and is
+    it consistent with what else the graph knows? On `replace_age`: may this
+    span's text survive into the de-identified output at all?
+
+FIT
+    Named by the `value` and `replace_age` policies in
+    `graph/second_line/policies.py`. The rule side is `rules/ages.py`. Reads the
+    ATTRIBUTE_OF edges to find whose age this is, and `comparators.parse_iso` for
+    the DOB arithmetic.
+
+HOW -- and the distinction that matters
+    An age is a QUASI-IDENTIFIER: "sixty-eight" plus a holler plus "miner"
+    describes one household. So `replace_age` defaults to replacing, and the only
+    keepable span is one a checker positively PROVED is not an age at all ("the
+    water came up twelve feet"). See `_NOT_AN_AGE_CHECKS` for why "the value is
+    wrong" and "this is not an age" must not be conflated -- an age nobody could
+    parse is still an age.
+
 The rule layer parses digits, spelled-out numbers, decade expressions and
 '-something' forms. When it misses and the LLM fills in, the guess must be a
 plausible whole-year age and must not contradict a DOB the graph already knows
@@ -39,6 +58,7 @@ _AGE_UNIT_AFTER = re.compile(r"^\W{0,3}(?:years?|yrs?)\s+old\b", re.I)
 
 
 def plausible_range(value, ctx) -> CheckOutcome:
+    """A human age must be a whole number between 0 and 115."""
     name = "plausible_age_range"
     if not isinstance(value, int):
         return fail(name, f"{value!r} is not an integer")
@@ -71,6 +91,12 @@ def not_a_measurement(value, ctx) -> CheckOutcome:
 
 
 def _owner_of(ctx, entity_id):
+    """Whose entity this one belongs to, following its ATTRIBUTE_OF edge.
+
+    Ages, DOBs and identifiers are attached to a person by an ATTRIBUTE_OF edge
+    pointing FROM the attribute TO the person, so this returns the first such
+    edge's target -- or None when nothing claimed it.
+    """
     for ed in ctx.edges:
         if ed.relation == Relation.ATTRIBUTE_OF and ed.source == entity_id:
             return ed.target
@@ -85,6 +111,12 @@ def consistent_with_dob(value, ctx) -> CheckOutcome:
     the SAME person and an interview date exists. A retrospective age ('I was
     seven') legitimately disagrees with age-at-interview, so we only refute when
     the stated age EXCEEDS the age at interview -- which is impossible.
+
+    HOW: find who owns this age, then look for a DATE_OF_BIRTH owned by the same
+    person. With both plus an interview date, age-at-interview is
+    `(interview_date - dob).days / 365.25` -- the .25 accounts for leap years. The
+    `+ 1` tolerance absorbs the fact that a stated age rounds and the interview
+    may post-date the statement.
     """
     name = "consistent_with_dob"
     if not isinstance(value, int) or ctx.interview_date is None:

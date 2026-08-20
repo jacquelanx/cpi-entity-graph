@@ -1,6 +1,36 @@
 """
 Deterministic checkers for GENDER (named persons and the interviewee).
 
+PURPOSE
+    Refute an LLM gender guess that the transcript contradicts. Gender feeds
+    surrogate name selection, so a wrong value is visible in the output; but it is
+    also frequently unknowable, so the design goal is to catch contradictions
+    without demanding proof.
+
+FIT
+    Named by the `gender` and `interviewee_gender` policies in
+    `graph/second_line/policies.py`. Reads `rules/kinship.KINSHIP_GENDER`, and for
+    the interviewee reuses `rules/attributes.py`'s own self-description patterns
+    and `rules/interviewee._is_address`, so proposer and verifier share both the
+    patterns and the turn-scoping.
+
+HOW -- REFUTE-ONLY, with one exception
+    Each checker looks for a specific deterministic signal (an honorific, an
+    adjacent kin word, a bound pronoun, a self-description) and:
+      * FAILS when the signal clearly contradicts the value;
+      * returns `na` when the signal is absent, or when signals conflict --
+        unknowable is not the same as wrong;
+      * returns `ok` only when it genuinely inspected and agreed.
+
+    So an unrefuted guess survives, which preserves recall. The exception is
+    `interviewee_honorific_address_agrees`, the one checker here that can
+    POSITIVELY confirm a value -- without it, `interviewee_gender` would be
+    unverifiable in principle on most transcripts.
+
+    Note `interviewee_spouse_term_agrees` can refute but deliberately never
+    confirms; see its closing comment for why counting it as support would be a
+    heteronormative inference dressed up as verification.
+
 The rule layer reads gender from kinship words (`kinship.KINSHIP_GENDER`). These
 checkers add the OTHER deterministic signals the rules never used, and apply them
 as refutations of an LLM guess: an honorific ('Mr.', 'Ms.', 'Father'), a kinship
@@ -45,6 +75,14 @@ _SPOUSE_M = re.compile(r"\bmy\s+(?:husband|late\s+husband|ex-husband)\b", re.I)
 # the rule layer's own patterns AND the same subject-turn masking, so the checker
 # and the rule cannot disagree about either the pattern or who was speaking.
 def _self_described(transcript: str):
+    """The set of genders the speaker described themselves as: {}, {"F"}, or {"F","M"}.
+
+    Runs the rule layer's four self-description patterns and collects every
+    gender that matched. A set rather than a single value because a transcript can
+    contain contradictory cues, and the callers treat "both" differently from
+    "one" -- see `interviewee_self_description_agrees`. Callers pass
+    `ctx.subject_transcript`, so only the speaker's own words are read.
+    """
     from ..rules.attributes import _IV_SELF_F, _IV_SELF_M, _IV_CALLME_F, _IV_CALLME_M
     found = set()
     for rx, g in ((_IV_SELF_F, "F"), (_IV_CALLME_F, "F"),
@@ -55,7 +93,12 @@ def _self_described(transcript: str):
 
 
 def honorific_gender(text: str):
-    """Gender implied by a leading honorific in a name form, else None."""
+    """Gender implied by an honorific in a name form, else None.
+
+    Returns None both for an absent honorific and for a deliberately genderless
+    one ("Dr", "Rev", "Coach") -- the table maps those to None explicitly, so a
+    title that says nothing about gender cannot be mistaken for one that does.
+    """
     for raw in re.split(r"[\s,]+", text or ""):
         t = raw.strip("'\".()-").lower()
         if t in HONORIFIC_GENDER:
@@ -64,6 +107,12 @@ def honorific_gender(text: str):
 
 
 def not_refuted_by_honorific(value, ctx) -> CheckOutcome:
+    """REFUTATION: a gendered honorific in this person's name fixes their gender.
+
+    "Mrs. Landry" cannot be male. Every surface form is examined; `seen` tracks
+    whether any gendered honorific was found at all, so a person with no title
+    gets `na` rather than a vacuous pass.
+    """
     name = "honorific_agreement"
     seen = False
     for form in getattr(ctx.entity, "sorted_mentions", []):
@@ -125,6 +174,12 @@ def _next_sentence(ctx, pos: int):
 
 
 def _other_person_starts(ctx, entity_id):
+    """Start offsets of every OTHER named person's mentions.
+
+    Used as CUT POINTS when scanning for a pronoun: the search stops at the next
+    person's name, so "was a man named Bill Ratliff. Then Loretta said she..."
+    cannot let Loretta's pronoun bind to Bill.
+    """
     return [s for (s, _e, eid) in ctx.named_person_spans() if eid != entity_id]
 
 

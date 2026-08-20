@@ -1,9 +1,21 @@
 """
 Shared HTML renderers for the demo pages (pipeline_report.py, llm_report.py).
 
-Every `stage_*` function takes a `case` dict from `demo.cases.load_case(..., trace=True)`
-and returns an HTML fragment. The page is a WALKTHROUGH of the pipeline in the
-order the stages actually run, so the panels here mirror `graph/pipeline.py`.
+PURPOSE
+    Build the HTML for the stage-by-stage report pages. Every function here
+    returns a string; nothing writes a file or runs a pipeline.
+
+FIT
+    A presentation layer over `demo/cases.py`. Consumed by
+    `scripts/pipeline_report.py` and `scripts/llm_report.py`, which use only
+    `transcript_panel` and `CSS` from this package. Reads `graph/` types
+    (entities, edges, `Resolution`) but never calls into it.
+
+HOW
+    Every `stage_*` function takes a `case` dict from
+    `demo.cases.load_case(..., trace=True)` and returns an HTML fragment. The page
+    is a WALKTHROUGH of the pipeline in the order the stages actually run, so the
+    panels here mirror `graph/pipeline.py`.
 
 WHERE THINGS LIVE. This was one 1300-line module; it is now one package with the
 same public surface:

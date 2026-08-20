@@ -1,6 +1,22 @@
 """
 Regression guards for the decisions interviewee-only surrogate generation depends on.
 
+PURPOSE
+    Pin the specific behaviours that have broken before. Each test corresponds to a
+    bug that actually shipped, so a failure here means that failure is back.
+
+FIT
+    Imports the rule parsers, the checkers, `second_line.owner_survivors` and the
+    serializer directly, and exercises them on tiny hand-built entities -- no
+    transcript files, no fixtures, no network, no LLM. `scripts/eval.py` covers the
+    end-to-end numbers; this covers the invariants that made those numbers wrong.
+
+HOW -- a deliberately minimal harness
+    No pytest. `check(label, got, want)` compares and records, `FAILS` accumulates
+    failures, and `main` runs every test then returns an exit code. Each test builds
+    the smallest thing the code under test needs -- usually one `Entity` and a
+    `CheckContext` around a one-sentence transcript -- via a small local helper.
+
     ./venv/bin/python3 tests/test_invariants.py
 
 No pytest, no fixtures, no network, no LLM -- every case here is a DETERMINISTIC
@@ -54,6 +70,12 @@ FAILS: list[str] = []
 
 
 def check(label, got, want):
+    """Assert `got == want`, printing the result and recording any failure.
+
+    Deliberately does NOT raise: every case runs on every invocation, so one
+    regression does not hide the others. `main` reads `FAILS` at the end and turns
+    a non-empty list into a non-zero exit code.
+    """
     if got != want:
         FAILS.append(f"{label}\n      got  {got!r}\n      want {want!r}")
         print(f"  FAIL  {label}")
@@ -63,7 +85,16 @@ def check(label, got, want):
 
 # --------------------------------------------------------------------- ownership
 def _owner(text, span, label="AGE", others=()):
-    """Which owner directions the deterministic checkers support for `span`."""
+    """Which owner directions the deterministic checkers support for `span`.
+
+    Builds the smallest world the ownership checkers need: one entity covering
+    `span`, one PERSON entity per name in `others` (so "a named person intervenes"
+    can be exercised), and a synthetic interviewee. Offsets come from
+    `text.index(span)`, which is why the test strings keep each span unique.
+
+    Returns the surviving directions -- `["interviewee"]`, `["other"]`, `[]` for
+    ambiguous, or both when the text supports neither exclusively.
+    """
     i = text.index(span)
     ents = [Entity("t_A1", label,
                    mentions=[Mention("t", i, i + len(span), span, label, "t_m1")])]
@@ -79,6 +110,14 @@ def _owner(text, span, label="AGE", others=()):
 
 
 def test_ownership():
+    """GUARD: the speaker's own identifiers and ages must be attributable to them.
+
+    The recall half checks that a first-person cue several sentences back, in the
+    same turn, still binds a span. The precision half checks that the four guards
+    -- a kin noun, a named person, a third-person subject, a turn boundary -- still
+    refute. Both directions matter: the failure was the speaker's own email and
+    life-course ages coming out BLOCKING.
+    """
     print("\nownership -- whose span is this?")
     # RECALL: a cue several sentences back, in the same turn, still binds.
     check("speaker's own email, cue two sentences back",
@@ -125,6 +164,12 @@ def test_ownership():
 
 # ------------------------------------------------------------------- name parts
 def test_name_parts():
+    """GUARD: a lone name token behind a form of address is a SURNAME.
+
+    "Father Nguyen" must not yield `given_name="Nguyen"` -- the surrogate generator
+    would mint a fake FIRST name to stand in for a family name. Also checks the
+    ambiguous kin/title words ("Father", "Sister") abstain rather than guess.
+    """
     print("\nname parts -- given vs surname")
     for form, want in [
         ("Mr. Landry", (None, "Landry")),        # honorific + one token -> surname
@@ -146,6 +191,12 @@ def test_name_parts():
 
 # ------------------------------------------------------------------------ dates
 def test_dates():
+    """GUARD: season-plus-year and spoken-year expressions parse correctly.
+
+    "spring of 1975" must resolve to the season, not January 1st (a 78-day error
+    that, under RULE_WINS, beat the model's correct answer), and a spelled-out year
+    like "nineteen and sixty" must resolve rather than falling through to the LLM.
+    """
     print("\ndate parsing")
     for text, want in [
         ("spring of 1975", ("1975-03-20", True)),     # season, not Jan 1
@@ -166,6 +217,12 @@ def test_dates():
 
 # ---------------------------------------------------------------- kin vocabulary
 def test_kin_vocabulary():
+    """GUARD: the kin-word tables stay SYMMETRIC across dialect variants.
+
+    "mamaw" was missing where "papaw" was present, so the speaker's grandmother got
+    no relation edge, no FAMILY subtype and no rule gender while his grandfather got
+    all three. Checks the same words are known to every table that needs them.
+    """
     print("\nkin vocabulary -- mamaw/papaw symmetry")
     from graph.checks.comparators import kin_canon
     from graph.checks.relation_evidence import _GROUP_OF
@@ -185,10 +242,17 @@ def test_kin_vocabulary():
 
 # ------------------------------------------------------------------ measurements
 def test_measurements():
+    """GUARD: a measurement must not be adopted as somebody's AGE.
+
+    "the water came up twelve feet" parses as 12, is in range, and would otherwise
+    acquire an owner and become a real age in the graph. The word directly after the
+    span is what refutes it -- while "sixty-eight years old" must still pass.
+    """
     print("\nmeasurements are not ages")
     from graph.checks.ages import not_a_measurement
 
     def outcome(text, span):
+        """Run `not_a_measurement` over one AGE span and return its `CheckOutcome`."""
         i = text.index(span)
         e = Entity("t_A1", "AGE",
                    mentions=[Mention("t", i, i + len(span), span, "AGE", "t_m1")])
@@ -212,7 +276,12 @@ def test_measurements():
 
 # --------------------------------------------------- temporal redaction directive
 def _temporal_ctx(text, span, category, attrs=None, provenance=None):
-    """One AGE/DATE entity and a CheckContext around it."""
+    """One AGE/DATE entity plus a `CheckContext` around it, as `(entity, ctx)`.
+
+    `attrs` seeds the entity's attributes and `provenance` its decision records --
+    both needed here because the redaction checkers read them (`replace_age`
+    consults the `value` Resolution, for instance).
+    """
     i = text.index(span)
     e = Entity("t_X1", category,
                mentions=[Mention("t", i, i + len(span), span, category, "t_m1")],
@@ -225,6 +294,13 @@ def _temporal_ctx(text, span, category, attrs=None, provenance=None):
 
 
 def test_temporal_redaction():
+    """GUARD: every AGE and DATE reaches the consumer with a `replace` directive.
+
+    They once arrived with none at all -- AGE with no redaction directive of any
+    kind -- so a consumer keying off `replace` printed the speaker's date of birth
+    and every age verbatim. Also checks the keep gate: only a span positively
+    refuted as an age may survive.
+    """
     print("\ntemporal redaction -- dates and ages carry a `replace` directive")
     from graph.checks.ages import (age_reading_refuted,
                                    keep_not_an_explicit_age_phrase,
@@ -316,6 +392,12 @@ def test_temporal_redaction():
 
 # ---------------------------------------------------------------- serialization
 def test_serialization():
+    """GUARD: `Relation` compares and formats as its wire value.
+
+    Because it mixes in `str`, `Relation.LOCATED_IN == "LOCATED_IN"` must hold --
+    otherwise `serialize.location_chain`'s edge filter matches nothing and the
+    LOCATED_IN walk surrogate generation needs is silently dead code.
+    """
     print("\nserialization -- the artifact surrogate generation consumes")
     check("Relation compares equal to its wire value",
           Relation.LOCATED_IN == "LOCATED_IN", True)
@@ -331,6 +413,13 @@ def test_serialization():
 
 # ------------------------------------------------------- titled speaker address
 def test_titled_address():
+    """GUARD: an honorific must not be treated as a sentence boundary.
+
+    "Thank you for sitting down with me, Ms. Reyes." has to stay ONE sentence, or
+    the fragment holding the name carries no second-person cue and the whole
+    titled-address route goes dark -- including the only checker that can
+    positively confirm the speaker's own gender.
+    """
     print("\ntitled address -- an honorific must not split the sentence")
     from graph.checks.gender import interviewee_honorific_address_agrees
     from graph.rules.interviewee import support_for
@@ -367,6 +456,13 @@ def test_titled_address():
 
 # -------------------------------------------------------------------- artifact
 def test_artifact():
+    """GUARD: the output contract -- a bad artifact must be REJECTED, not written.
+
+    Builds a valid payload, then breaks one thing at a time and requires
+    `validate_payload` to refuse each: a different source transcript, a mention
+    whose offsets no longer slice to its text, an edge or blocking row pointing at
+    no entity, a missing interviewee, a version mismatch.
+    """
     print("\nartifact -- the contract with surrogate generation")
     import copy
     from graph.loader import Violation
@@ -397,6 +493,12 @@ def test_artifact():
           len(payload["source"]["sha256"]), 64)
 
     def rejected(mutate=None, transcript=text) -> bool:
+        """True if `validate_payload` REJECTS a (optionally corrupted) copy of the payload.
+
+        `mutate` receives a deep copy of the valid payload and breaks one thing in
+        it; the deep copy is what keeps each case independent. Every corruption
+        below must be rejected, so the expected answer is always True.
+        """
         p = copy.deepcopy(payload)
         if mutate is not None:
             mutate(p)
@@ -422,6 +524,7 @@ def test_artifact():
 
 
 def main():
+    """Run every test and return a shell exit code: 0 if all invariants hold, 1 if not."""
     for t in (test_ownership, test_name_parts, test_dates, test_kin_vocabulary,
               test_measurements, test_temporal_redaction, test_titled_address,
               test_serialization, test_artifact):
