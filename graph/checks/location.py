@@ -189,14 +189,14 @@ def keep_only_if_broad_place(value, ctx) -> CheckOutcome:
     direction, so it is the direction that must be proved. A name may only be kept
     when the place is coarse enough that it cannot single out a household --
     country / state / region, per the rule layer's own
-    `location_dates.BROAD_LOCATION_TYPES`. An INSTITUTION is never keepable (a
+    `rules/locations.BROAD_LOCATION_TYPES`. An INSTITUTION is never keepable (a
     named church, school or employer is a direct pointer to a person), and neither
     is a place nothing could type.
     """
     name = "keep_only_if_broad_place"
     if value is not False:
         return na(name, "not a keep claim")
-    from ..location_dates import BROAD_LOCATION_TYPES, AMBIGUOUS_BROAD_NAMES
+    from ..rules.locations import BROAD_LOCATION_TYPES, AMBIGUOUS_BROAD_NAMES
     ent = ctx.entity
     if getattr(ent, "category", "") == "INSTITUTION":
         return fail(name, "an INSTITUTION is a named organisation; never kept")

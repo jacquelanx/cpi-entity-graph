@@ -22,20 +22,20 @@ import os
 import re
 from dateutil import parser as dateparser
 from .models import Entity, Edge, Relation
-from .merge_strings import merge_person_mentions, normalize
-from .aliases import apply_alias_cues
-from .coref import apply_coref
-from .kinship import extract_kinship
-from .attributes import (infer_person_attributes, infer_interviewee_gender,
+from .rules.name_matching import merge_person_mentions, normalize
+from .rules.aliases import apply_alias_cues
+from .rules.coref import apply_coref
+from .rules.kinship import extract_kinship
+from .rules.attributes import (infer_person_attributes, infer_interviewee_gender,
                          infer_person_role, infer_ethnicity)
-from .identifiers import build_identifier_entities
-from .location_dates import (
-    load_gazetteer, build_location_edges, infer_location_replace,
-    resolve_date_entity, resolve_age_entity, age_date_constraints,
-)
+from .rules.identifiers import build_identifier_entities
+from .rules.locations import (load_gazetteer, build_location_edges,
+                              infer_location_replace)
+from .rules.dates import resolve_date_entity
+from .rules.ages import resolve_age_entity, age_date_constraints
 from .second_line import resolve_all, blocking_fields
-from .interviewee import resolve_interviewee_identity
-from .turns import mask_to_subject
+from .rules.interviewee import resolve_interviewee_identity
+from .text.turns import mask_to_subject
 
 _DATE_CATS = ("DATE_ABSOLUTE", "DATE_RELATIVE", "DATE_ANCHOR", "DATE_OF_BIRTH")
 
@@ -330,7 +330,7 @@ def run_pipeline(transcript_id, transcript, mentions, metadata=None,
     # ------------------------------------------------------------------ LLM
     # The LLM layer PROPOSES; `graph.second_line` ARBITRATES. Nothing below
     # writes a field decision directly except the two out-of-scope classes noted
-    # in graph/second_line.py (LLM-only fields with no rule to check against, and
+    # in graph/second_line/ (LLM-only fields with no rule to check against, and
     # structural identity suggestions).
     llm_ran = False
     ledger: dict = {}
@@ -366,7 +366,7 @@ def run_pipeline(transcript_id, transcript, mentions, metadata=None,
 
         # Relations are NOT added here any more. They are a field like any other:
         # `resolve_all` arbitrates each pair (rule detail vs LLM proposal) with the
-        # verifier in graph/checks/relations.py as the checker, and returns the
+        # verifier in graph/checks/relation_evidence.py as the checker, and returns the
         # surviving edges. That is what gives relations a Resolution, a provenance
         # record and a row in the ledger.
         ledger = resolve_all(transcript, entities, edges, interviewee, proposals,

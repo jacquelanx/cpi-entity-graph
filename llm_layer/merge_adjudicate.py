@@ -1,12 +1,12 @@
 """
 LLM use #1: merge adjudication ("are these two mentions the same real person?").
-Called by the coref stage (`graph/coref.py`) as the double-gate: a coref-linked
+Called by the coref stage (`graph/rules/coref.py`) as the double-gate: a coref-linked
 pair is only merged when the LLM also confirms they're the same person, on real
 evidence. 
 """
 
 from __future__ import annotations
-from .llm import LLMClient, _windows
+from .client import LLMClient, _windows
 
 
 _SAME_PERSON_SYSTEM = (

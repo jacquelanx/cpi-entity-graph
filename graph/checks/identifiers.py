@@ -13,7 +13,7 @@ Three gaps this module used to have, all closed here:
     second-lined field, so they ride in the same pass), but `KIND_TO_CAT` knew
     nothing about "age" or "dob" -- so those proposals were dropped, and would
     have been refuted by `kind_is_known` if they hadn't been. Both are now first
-    class, verified by the rule parsers in `graph/location_dates.py`.
+    class, verified by the rule parsers in `graph/rules/dates.py and graph/rules/ages.py`.
   * `kind` was compared across two different vocabularies. The RULE value is an
     entity CATEGORY (`SSN_OR_ID`), the LLM value is a lowercase word (`ssn`).
     `canon_kind` maps both onto one category so a checker can run on either.
@@ -22,7 +22,7 @@ Three gaps this module used to have, all closed here:
 
 from __future__ import annotations
 from . import CheckOutcome, ok, fail, na
-from ..identifiers import _normalize, COMMON_OCCUPATIONS, _is_common_occupation
+from ..rules.identifiers import _normalize, COMMON_OCCUPATIONS, _is_common_occupation
 
 # The model's `kind` word -> the category this pipeline emits.
 KIND_TO_CAT = {"phone": "PHONE", "email": "EMAIL", "ssn": "SSN_OR_ID",
@@ -63,7 +63,7 @@ def kind_renormalizes(value, ctx) -> CheckOutcome:
         return fail(name, "no span to re-normalize")
 
     if cat == "AGE":
-        from ..location_dates import parse_age_value
+        from ..rules.ages import parse_age_value
         parsed, _approx = parse_age_value(m.text)
         if parsed is None:
             return fail(name, f"{m.text!r} does not parse as an age")
@@ -72,7 +72,7 @@ def kind_renormalizes(value, ctx) -> CheckOutcome:
         return ok(name, f"parses as age {parsed}")
 
     if cat == "DATE_OF_BIRTH":
-        from ..location_dates import parse_absolute_date
+        from ..rules.dates import parse_absolute_date
         iso, has_year = parse_absolute_date(m.text)
         if iso is None:
             return fail(name, f"{m.text!r} does not parse as a date")

@@ -1,7 +1,7 @@
 """
 LLM use #4: windowed judgment over direct identifiers.
 
-The deterministic layer (`graph/identifiers.py`) already types/normalizes PHONE /
+The deterministic layer (`graph/rules/identifiers.py`) already types/normalizes PHONE /
 EMAIL / SSN_OR_ID / USERNAME_HANDLE / OCCUPATION. This pass adds the *contextual*
 judgment a regex can't make, reading windows of the transcript with the
 identifier spans tagged (`[ID2 555-123-4567]`):

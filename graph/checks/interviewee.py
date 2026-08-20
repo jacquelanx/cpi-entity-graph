@@ -25,7 +25,7 @@ The three checks:
 
 from __future__ import annotations
 from . import CheckOutcome, ok, fail, na
-from ..interviewee import support_for, kin_introduction_before
+from ..rules.interviewee import support_for, kin_introduction_before
 
 
 def _candidate(value, ctx):
@@ -64,7 +64,7 @@ def not_a_public_figure(value, ctx) -> CheckOutcome:
     ent = _candidate(value, ctx)
     if ent is None:
         return na(name, "no candidate to inspect")
-    from ..attributes import PUBLIC_FIGURES
+    from ..rules.attributes import PUBLIC_FIGURES
     if str(ent.subtype or "").startswith("PUBLIC_FIGURE"):
         return fail(name, "the rules typed this name as a public figure")
     if {f.lower() for f in ent.sorted_mentions} & PUBLIC_FIGURES:

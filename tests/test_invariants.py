@@ -43,8 +43,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from graph.checks import CheckContext
-from graph.location_dates import parse_absolute_date, parse_age_value, parse_spoken_year
-from graph.merge_strings import split_name_parts
+from graph.rules.dates import parse_absolute_date, parse_spoken_year
+from graph.rules.ages import parse_age_value
+from graph.rules.name_matching import split_name_parts
 from graph.models import Edge, Entity, Mention, Relation
 from graph.second_line import POLICIES, owner_survivors
 from graph.serialize import build_nx_graph, location_chain
@@ -167,9 +168,9 @@ def test_dates():
 def test_kin_vocabulary():
     print("\nkin vocabulary -- mamaw/papaw symmetry")
     from graph.checks.comparators import kin_canon
-    from graph.checks.relations import _GROUP_OF
-    from graph.kinship import KINSHIP_GENDER
-    from graph.merge_strings import KINSHIP_AND_TITLES
+    from graph.checks.relation_evidence import _GROUP_OF
+    from graph.rules.kinship import KINSHIP_GENDER
+    from graph.rules.name_matching import KINSHIP_AND_TITLES
 
     for w in ("mamaw", "mawmaw", "memaw", "meemaw"):
         check(f"{w!r} implies F in KINSHIP_GENDER", KINSHIP_GENDER.get(w), "F")
@@ -332,7 +333,7 @@ def test_serialization():
 def test_titled_address():
     print("\ntitled address -- an honorific must not split the sentence")
     from graph.checks.gender import interviewee_honorific_address_agrees
-    from graph.interviewee import support_for
+    from graph.rules.interviewee import support_for
 
     text = ("INTERVIEWER: Thank you for sitting down with me, Ms. Reyes. Could we "
             "start with where you grew up?\nSPEAKER: Happy to do it.\n")

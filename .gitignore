@@ -16,3 +16,4 @@ out/
 *.llm_cache.json
 # private
 UNIFICATION_PLAN.md
+.claude/

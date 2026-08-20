@@ -157,7 +157,7 @@ _CTX_CHAR_BUDGET = 6000
 
 
 def _windows(transcript: str, entity, radius: int = 160, max_snips: int = 3):
-    from .extract import _sentences               # local: keep llm.py import-light
+    from .extract import _sentences               # local: keep client.py import-light
     sents = _sentences(transcript) or [(0, len(transcript))]
     n = len(transcript)
 

@@ -36,7 +36,7 @@ first-person speech can never be read as the subject's.
 from __future__ import annotations
 import re
 from . import CheckOutcome, ok, fail, na
-from ..kinship import KINSHIP_GENDER
+from ..rules.kinship import KINSHIP_GENDER
 
 _FP_CUE = re.compile(
     r"\b(?:my|our)\b|\bI\b|\bme\b|\bwe\b|"
@@ -165,7 +165,7 @@ def _nearest_cue_end(ctx, m):
     (it opens with "\\nSPEAKER: "). Testing that start for subject-hood would throw
     away a legitimate same-turn lookback.
     """
-    from ..turns import turn_bounds
+    from ..text.turns import turn_bounds
     ts, _te = turn_bounds(m.start, ctx.turns)
     floor = max(ts, m.start - _LOOKBACK_CHARS)
     ss, _se = ctx.sentence_bounds(m.start)

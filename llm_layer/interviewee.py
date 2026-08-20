@@ -1,7 +1,7 @@
 """
 LLM proposer for `interviewee_identity`: which named person is the SPEAKER?
 
-The rule layer (`graph/interviewee.py`) reads three closed constructions -- the
+The rule layer (`graph/rules/interviewee.py`) reads three closed constructions -- the
 speaker's turn label, a first-person self-introduction, an interviewer's address.
 Those are high precision but far from complete: a subject can be named once, in
 passing, by a construction no regex enumerates ("Boudreaux is what everybody's

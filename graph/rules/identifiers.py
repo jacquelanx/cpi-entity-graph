@@ -14,7 +14,7 @@ open-world classifier).
 
 from __future__ import annotations
 import re
-from .models import Entity
+from ..models import Entity
 
 ID_CATS = ("PHONE", "EMAIL", "SSN_OR_ID", "USERNAME_HANDLE", "OCCUPATION")
 

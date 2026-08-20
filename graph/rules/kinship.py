@@ -19,7 +19,7 @@ multi-token names ("Maria Rodriguez"), and step/half/in-law/grand kin terms.
 
 from __future__ import annotations
 import re
-from .models import Edge, Entity, Relation
+from ..models import Edge, Entity, Relation
 
 
 # Kinship word (lowercased, spaces/hyphens normalized) -> gender it implies for
@@ -216,7 +216,7 @@ def extract_kinship(
     # case where the kin word is actually the SUBJECT of the next clause
     # ("Lewis, my Papaw would say ...", which is NOT an appositive). Anything that
     # doesn't clear this bar produces NO rule edge and is left to the LLM relation
-    # second line (extract_pass proposes, graph/checks/relations.py verifies),
+    # second line (extract_pass proposes, graph/checks/relation_evidence.py verifies),
     # which reads the full context.
     for m in re.finditer(
         rf"({_NAME}),\s+(?i:(?:who\s+(?:is|was)\s+|who's\s+)?({_POSS}|{_PRON})\s+{_MOD}({KIN}))"

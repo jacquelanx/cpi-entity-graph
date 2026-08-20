@@ -26,7 +26,7 @@ EXIT CODES matter here, because "blocking" is a review gate and not a warning:
     1   a transcript failed to process
 
 `--demo` swaps the detection stage for the simulated perfect detector in
-`tests/gold/*.json`, so the whole handoff can be smoke-tested before a real detector
+`samples/gold/*.json`, so the whole handoff can be smoke-tested before a real detector
 exists. It is a test fixture, not a detector; never point it at real data.
 """
 
@@ -48,16 +48,16 @@ from graph.loader import (Violation, load_stage_inputs, load_transcript,
 from graph.pipeline import run_pipeline
 from graph.serialize import serialize
 
-TESTS = REPO_ROOT / "tests"
+SAMPLES = REPO_ROOT / "samples"
 DEFAULT_GAZ = REPO_ROOT / "data" / "gazetteer.csv"
 
 
 def _demo_inputs(tid: str):
     """Transcript + mentions from the gold annotations (a stand-in detector)."""
-    from demo_utils import detections_from_gold
+    from demo.cases import detections_from_gold
 
-    text = load_transcript(TESTS / "transcripts" / f"{tid}.txt")
-    gold = json.loads((TESTS / "gold" / f"{tid}.json").read_text(encoding="utf-8"))
+    text = load_transcript(SAMPLES / "transcripts" / f"{tid}.txt")
+    gold = json.loads((SAMPLES / "gold" / f"{tid}.json").read_text(encoding="utf-8"))
     mentions = make_mentions(tid, resolve_overlaps(detections_from_gold(text, gold)))
     return text, mentions, {"interview_date": gold.get("interview_date")}
 
@@ -65,7 +65,7 @@ def _demo_inputs(tid: str):
 def _ids(args) -> list[str]:
     if args.transcript_ids:
         return list(args.transcript_ids)
-    root = (TESTS if args.demo else Path(args.data_dir)) / "transcripts"
+    root = (SAMPLES if args.demo else Path(args.data_dir)) / "transcripts"
     if not root.is_dir():
         raise Violation(f"no transcripts directory at {root}")
     return sorted(p.stem for p in root.glob("*.txt"))
@@ -106,7 +106,7 @@ def main() -> int:
     ap.add_argument("--no-coref", action="store_true",
                     help="skip the coreference stage (faster; loads no model)")
     ap.add_argument("--demo", action="store_true",
-                    help="use tests/ and the SIMULATED detector in tests/gold "
+                    help="use samples/ and the SIMULATED detector in samples/gold "
                          "(a fixture for smoke-testing, never real data)")
     args = ap.parse_args()
 

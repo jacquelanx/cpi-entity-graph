@@ -8,12 +8,12 @@ with, per transcript:
     (accept / reject) and exported.
 
 The page opens straight on the transcript tabs. For the rules-only baseline, build
-`scripts/dashboard.py`, which renders the identical twelve stages with the second
+`scripts/pipeline_report.py`, which renders the identical twelve stages with the second
 line switched off.
 
     ./venv/bin/python3 scripts/llm_report.py
 
-Writes tests/llm_report.html and opens it. Needs Ollama running with the model
+Writes reports/llm_report.html and opens it. Needs Ollama running with the model
 (see LLM.md); the persistent cache makes re-runs fast. First run takes a few
 minutes.
 """
@@ -22,19 +22,18 @@ from __future__ import annotations
 import os
 os.environ["KG_USE_LLM"] = "1"          # turn the LLM layer on for this report
 
-import importlib.util
 import sys
 import webbrowser
 from html import escape
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(SCRIPTS.parent))
 
-from demo_utils import all_tids, load_case, REPO_ROOT
-import render
+from demo.cases import all_tids, load_case, REPO_ROOT
+from demo import render
 
-OUT = REPO_ROOT / "tests" / "llm_report.html"
+OUT = REPO_ROOT / "reports" / "llm_report.html"
 TITLES = {
     "interview_001": "Gulf Coast Vietnamese shrimping family",
     "interview_002": "Appalachian coal-mining family",
@@ -43,10 +42,8 @@ TITLES = {
 
 
 def _load_eval():
-    spec = importlib.util.spec_from_file_location("kg_eval", SCRIPTS / "eval.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    from evaluation import scoring
+    return scoring
 
 
 # ---------- pull agreements / suggestions / conflicts out of a finished run ----------
@@ -137,7 +134,7 @@ def reconcile_items(case):
                               + ("" if res.checks_passed else
                                  "; no deterministic check applied either")})
             elif res.action == "reject":
-                # BOTH LAYERS BLIND -- the outcome `graph/second_line.py` describes as
+                # BOTH LAYERS BLIND -- the outcome `graph/second_line/` describes as
                 # "made visible", and the one this function made invisible: a
                 # non-blocking `reject` with no failed checks matched no branch at all.
                 # That is why `approximate` on an off-table DATE_ANCHOR -- a field that
@@ -279,7 +276,7 @@ def build():
         m_llm = kg_eval.evaluate_one(tid)
         # No second, LLM-disabled pass any more. It existed only to fill the
         # "rules only" column of the comparison table at the top of the page, and
-        # it doubled the build time; `scripts/dashboard.py` is the rules-only
+        # it doubled the build time; `scripts/pipeline_report.py` is the rules-only
         # baseline and renders the identical twelve stages.
         agree, sugg, conflict, unverified = reconcile_items(case)
         active = " active" if idx == 0 else ""

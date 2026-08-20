@@ -1,178 +1,18 @@
 """
-Normalization and hierarchy assignment for locations and dates.
+Putting every date mention on the timeline.
 
-Locations: resolve aliases via the gazetteer ("NOLA" -> "New Orleans"), then
-build LOCATED_IN edges. When locations are replaced later, walk these edges
-upward/downward for consistency within the surrogate generator. 
-
-Dates: we put every date mention on the timeline.
 DATE_ABSOLUTE  --> parse directly (dateutil).
 DATE_RELATIVE  --> resolve against the interview_date from metadata.
-DATE_ANCHOR    --> match against a public-events table; public events can't move
-so they CONSTRAIN the date-shift offset. 
-
-Ages: convert words to int, and record STATED_WITH edges when an age and a
-date are stated in the same sentence ("I was nineteen in 2009"); again this is
-for internal consistency. 
+DATE_ANCHOR    --> match against `ANCHOR_EVENTS`; public events cannot move, so
+                   they CONSTRAIN the date-shift offset.
 """
-
 
 from __future__ import annotations
-import csv
+
 import re
 from datetime import timedelta, datetime
-from pathlib import Path
 from dateutil import parser as dateparser
-from .models import Edge, Entity, Relation
-from .sentences import sentence_spans
-
-
-"""
-gazetteer.csv columns: name, type, parent, alises (| separated)
-Returns (records_by_canonical_name, alias->canonical map).
-"""
-def load_gazetteer(path: str | Path):
-    records: dict[str, dict] = {}
-    aliases: dict[str, str] = {}
-    path = Path(path)
-    if not path.exists():
-        return records, aliases
-    
-    with open(path, newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            name = row["name"].strip().lower()
-            records[name] = {
-                "name": row["name"].strip(),
-                "type": row["type"].strip().lower(),
-                "parent": row["parent"].strip().lower(),
-            }
-            for a in (row.get("aliases") or "").split("|"):
-                if a.strip():
-                    aliases[a.strip().lower()] = name
-    return records, aliases
-
-
-"""
-Creates LOCATED_IN edges between location/institution entities per gazetteer.
-"""
-def build_location_edges(
-    entities: list[Entity],
-    gazetteer: dict[str, dict],
-    aliases: dict[str, str] | None = None,
-) -> list[Edge]:
-    aliases = aliases or {}
-    by_name = {}
-    for e in entities:
-        if e.category in ("LOCATION", "INSTITUTION"):
-            key = e.sorted_mentions[-1].lower() if e.sorted_mentions else ""
-            for form in e.sorted_mentions:
-                candidate = aliases.get(form.lower(), form.lower())
-                if candidate in gazetteer:
-                    key = candidate
-                    break
-            by_name[key] = e
-            rec = gazetteer.get(key)
-            if rec:
-                e.subtype = rec["type"].upper()
-                # Expose the gazetteer's parent as the RULE value for the
-                # `location_parent` field, so the second line CHECKS it instead of
-                # only filling gaps. Recorded even when the parent isn't a mention in
-                # this transcript (so no edge is built): an LLM parent that
-                # contradicts a known gazetteer parent is then a conflict rather than
-                # an unchallenged fill -- which is what let "Columbus -> West
-                # Virginia" and "Charleston -> West Virginia" through.
-                if rec["parent"]:
-                    e.attributes.setdefault(
-                        "location_parent", gazetteer[rec["parent"]]["name"]
-                        if rec["parent"] in gazetteer else rec["parent"])
-    # now we have a lookup table that resolves the key to an alias in the
-    # gazetteer (if it exists), else just uses the default key
-
-    edges = []
-    for key, e in by_name.items():  # iterate through lookup table
-        rec = gazetteer.get(key)
-        if rec and rec["parent"] and rec["parent"] in by_name:  # rec AND parent must be Entities
-            edges.append(
-                Edge(
-                    source=e.entity_id,
-                    target=by_name[rec["parent"]].entity_id,
-                    relation=Relation.LOCATED_IN,
-                    detail=f"{rec['type']} in {gazetteer[rec['parent']]['type']}",
-                    evidence="gazetteer",
-                )
-            )
-    return edges
-
-
-# Geographic granularity coarse enough that keeping it cannot single out a
-# household: a country, a state/province/district, or a region/county/parish.
-# Everything at CITY level or finer -- and every INSTITUTION, and every place the
-# gazetteer could not type -- is replaced. Deliberately keyed on the RAW type
-# rather than the canonical bucket in `checks/comparators.LOC_CANON`: that bucket
-# folds "island" and "metro" into "region", and an island or a metro area can be
-# small enough to identify one family.
-BROAD_LOCATION_TYPES = {
-    "country", "territory",
-    "state", "province", "district",
-    "region", "county", "parish",
-}
-
-
-# Names the gazetteer types BROAD but that, said aloud, just as often mean a
-# CITY-level place. The gazetteer is keyed on a bare lowercase name, so it answers
-# with whichever sense it happens to hold, and "keep it, the table says it is a
-# state" is then unfalsifiable: `checks/location.type_corroborated` confirms the type
-# against the same table that produced it, so the two agree by construction.
-#
-# Verified: interview_002's "Every light that ever came on in Charleston or in
-# Washington" means Washington D.C., and the row above types "washington" as a state,
-# so the name was KEPT -- the one place leak in the sample transcripts.
-#
-# Membership forces the safe direction (replace) rather than asserting a type, so the
-# cost of a name being here is over-redacting a genuine region reference, and the
-# benefit is that an ambiguous name can never be kept on a table collision. Keep it to
-# names where BOTH senses are common in ordinary speech.
-AMBIGUOUS_BROAD_NAMES = {
-    "washington",       # state / D.C.
-    "new york",         # state / city
-    "georgia",          # US state / country
-    "mexico",           # country / Mexico City, and Mexico, Missouri
-    "kansas",           # state / Kansas City
-    "panama",           # country / Panama City
-    "quebec",           # province / Quebec City
-    "luxembourg",       # country / city
-    "singapore", "monaco", "san marino",   # country == city
-}
-
-
-def infer_location_replace(entities: list[Entity]) -> None:
-    """RULE layer for LOCATION / INSTITUTION `replace`.
-
-    Nothing used to decide this at all: location entities reached surrogate
-    generation with no `replace` key, so a consumer keying off `replace` skipped
-    every place name while redacting every person -- and a hamlet plus an age plus
-    an occupation is exactly how an interviewee gets re-identified.
-
-    The rule is the gazetteer's own granularity. A place typed country / state /
-    region is kept; a city or anything finer is replaced; an INSTITUTION (a named
-    organisation, church, school, employer) is always replaced; and a place the
-    gazetteer could not type at all is replaced, because an unknown place is far
-    more likely to be a small local one than a country.
-
-    Over-redaction is the safe error here, so the default is always `True`. The
-    LLM's own identifying-ness judgment second-lines this in
-    `graph.second_line` under `replace_location`, with `conflict_policy=
-    safe_direction` -- so a disagreement always resolves toward more redaction --
-    and the checkers in `graph/checks/location.py` gate the KEEP direction.
-    """
-    for e in entities:
-        if e.category not in ("LOCATION", "INSTITUTION"):
-            continue
-        if e.category == "INSTITUTION":
-            e.attributes.setdefault("replace", True)
-            continue
-        raw = (e.subtype or "").strip().lower()
-        e.attributes.setdefault("replace", raw not in BROAD_LOCATION_TYPES)
+from ..models import Entity
 
 
 # ----------------------------- Dates -----------------------------
@@ -222,6 +62,7 @@ ANCHOR_EVENTS = {
     "london olympics": "2012-07-27",
 }
 
+
 def _strip_article(s: str) -> str:
     """Drop a leading article so anchor matching is article-insensitive."""
     return re.sub(r"^(?:the|a|an)\s+", "", s.strip())
@@ -232,16 +73,22 @@ def _strip_article(s: str) -> str:
 # defaulting to "today", which made "March 1990" resolve to today's day-of-month
 # and change with the run date.
 _ABS_DATE_DEFAULT = datetime(2000, 1, 1)
+
+
 # a plausible explicit 4-digit year; used to detect year-less absolute dates
 _YEAR_RE = re.compile(r"\b(?:1[89]\d{2}|20\d{2})\b")
+
 
 # approximate mid-season dates
 _SEASONS = {"spring": "03-20", "summer": "06-21", "fall": "09-22",
             "autumn": "09-22", "winter": "12-21"}
+
+
 # a written month name, used to tell "nineteen sixty" (year only) from a spoken year
 # that also pins a month
 _MONTH_NAME_RE = re.compile(
     r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)", re.I)
+
 
 # "two years ago", "a couple of months ago", "several weeks ago", "3 days ago"
 _REL_AGO = re.compile(
@@ -249,19 +96,26 @@ _REL_AGO = re.compile(
     r"a\s+couple(?:\s+of)?|a\s+few|several|\d+)\s+"
     r"(day|week|month|year|decade)s?\s+ago\b", re.I)
 
+
 # "last year", "this past month", "next week"
 _REL_UNIT = re.compile(
     r"\b(last|this\s+past|this|next)\s+(week|month|year|decade)\b", re.I)
+
 
 # "last spring", "this past summer", "last winter"
 _REL_SEASON = re.compile(
     r"\b(?:last|this\s+past|this)\s+(spring|summer|fall|autumn|winter)\b", re.I)
 
+
 _WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday",
              "saturday", "sunday"]
+
+
 _REL_WEEKDAY = re.compile(rf"\b(?:last|this\s+past)\s+({'|'.join(_WEEKDAYS)})\b", re.I)
 
+
 _UNIT_DAYS = {"day": 1, "week": 7, "month": 30, "year": 365, "decade": 3650}
+
 
 _WORD_NUM = {
     "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
@@ -311,7 +165,11 @@ _SPOKEN_UNITS = {
     "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70,
     "eighty": 80, "ninety": 90,
 }
+
+
 _SPOKEN_CENTURY = {"eighteen": 1800, "nineteen": 1900, "twenty": 2000}
+
+
 _SPOKEN_YEAR_RE = re.compile(
     r"\b(eighteen|nineteen|twenty)\b[\s\-]+(?:and[\s\-]+)?"
     r"((?:" + "|".join(_SPOKEN_UNITS) + r")(?:[\s\-]+(?:"
@@ -475,119 +333,3 @@ def resolve_date_entity(entity: Entity, interview_date) -> None:
             return
 
         entity.flag_entity("relative date pattern not recognized")
-
-
-_AGE_ONES = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
-             "seven": 7, "eight": 8, "nine": 9}
-_AGE_TEENS = {"ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
-              "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
-              "eighteen": 18, "nineteen": 19}
-_AGE_TENS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
-             "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90}
-# Decade expressions: "in my twenties", "mid-thirties", "late forties".
-# These are approximate; we store a representative age within the decade.
-_AGE_DECADES = {"twenties": 20, "thirties": 30, "forties": 40, "fifties": 50,
-                "sixties": 60, "seventies": 70, "eighties": 80, "nineties": 90}
-
-
-def parse_age_value(text: str) -> tuple[int | None, bool]:
-    """THE rule parser for an age expression, as a pure function.
-
-    Returns `(value, approximate)`; `value` is None when the expression cannot be
-    parsed. Split out of `resolve_age_entity` so `graph/checks/` can re-run the
-    rule's own arithmetic as the deterministic check on an LLM `value` /
-    `approximate` proposal -- the same arrangement `checks/identifiers.py` uses
-    with `identifiers._normalize`. Keeping ONE parser means the rule layer and
-    the checker can never disagree about what the text says.
-    """
-    text = (text or "").lower()
-    m = re.search(r"\d{1,3}", text)
-    if m:
-        return int(m.group(0)), False
-
-    dec = re.search(r"(early|mid|middle|late)?[\s\-]*(" +
-                    "|".join(_AGE_DECADES) + r")\b", text)
-    if dec:
-        bump = {"early": 2, "mid": 5, "middle": 5, "late": 8}.get(dec.group(1) or "", 5)
-        return _AGE_DECADES[dec.group(2)] + bump, True
-
-    # "twenty-something", "thirty-something"
-    som = re.search(r"(twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)"
-                    r"[\s\-]*something", text)
-    if som:
-        return _AGE_TENS[som.group(1)] + 5, True
-
-    total, found = 0, False
-    for tok in re.split(r"[\s\-]+", text):
-        if tok in _AGE_TEENS:
-            total += _AGE_TEENS[tok]; found = True
-        elif tok in _AGE_TENS:
-            total += _AGE_TENS[tok]; found = True
-        elif tok in _AGE_ONES:
-            total += _AGE_ONES[tok]; found = True
-    return (total, False) if found else (None, False)
-
-
-"""
-Used for AGE entities; we want a value to store in `entity.attributes`.
-Thin wrapper over `parse_age_value` so the parser stays reusable by the checkers.
-"""
-def resolve_age_entity(entity: Entity) -> None:
-    value, approximate = parse_age_value(entity.mentions[0].text)
-    if value is None:
-        entity.flag_entity("could not parse age value")
-        return
-    entity.attributes["value"] = value
-    if approximate:
-        entity.attributes["approximate"] = True
-
-
-"""
-STATED_WITH edges: an age and the date it was co-stated with must stay
-arithmetically consistent after date-shifting ("I enlisted in September 2008. I
-was eighteen" -> shifting 2008 must move the implied birth year too).
-
-Scoped deliberately: each AGE links to the SINGLE NEAREST date within `window`
-sentences (by character distance), not to every date in range. The old
-"every age x every date in window" produced quadratic, duplicated, and spurious
-links -- e.g. "eighteen" tying to both September 2008 (the real anchor) and a
-nearby "9/11". One age has one temporal anchor, so one edge per age.
-"""
-def age_date_constraints(
-    transcript: str, entities: list[Entity], window: int = 1
-) -> list[Edge]:
-
-    sentences = sentence_spans(transcript)
-
-    """Return the index of the sentence containing character position `pos`."""
-    def sentence_of(pos: int) -> int:
-        for i, (s, e) in enumerate(sentences):
-            if s <= pos < e:
-                return i
-        # fallback: if position isn't found, treat it as belonging to the final sentence
-        return len(sentences) - 1
-
-    ages = [e for e in entities if e.category == "AGE"]
-    dates = [e for e in entities
-             if e.category in ("DATE_ABSOLUTE", "DATE_RELATIVE", "DATE_ANCHOR")]
-    edges = []
-    for a in ages:
-        best = None                     # (char_gap, date_entity, age_mention)
-        for am in a.mentions:
-            a_sent = sentence_of(am.start)
-            for d in dates:
-                for dm in d.mentions:
-                    if abs(sentence_of(dm.start) - a_sent) <= window:
-                        gap = abs(dm.start - am.start)
-                        if best is None or gap < best[0]:
-                            best = (gap, d, am)
-        if best is not None:
-            _, d, am = best
-            s, e = sentences[sentence_of(am.start)]
-            edges.append(Edge(
-                source=a.entity_id, target=d.entity_id,
-                relation=Relation.STATED_WITH,
-                detail="age and date co-stated; keep arithmetic",
-                evidence=transcript[s:e].strip(),
-            ))
-    return edges

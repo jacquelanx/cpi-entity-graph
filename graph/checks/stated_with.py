@@ -1,7 +1,7 @@
 """
 Deterministic checkers for `stated_with` -- which DATE an AGE was co-stated with.
 
-The rule (`location_dates.age_date_constraints`) is purely positional: the single
+The rule (`rules/ages.age_date_constraints`) is purely positional: the single
 nearest date within one sentence, by character distance. That is a reasonable guess
 and often right, but it has no notion of whether the sentence actually ties the two
 together -- and the pairing matters, because date-shifting must keep the age

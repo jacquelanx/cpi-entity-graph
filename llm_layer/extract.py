@@ -12,7 +12,7 @@ This module mutates nothing:
 
   * proposals -- gender (incl. the speaker's own), given_name, surname, `role`,
     `ethnicity`
-  * relations -- RAW, unverified. `graph/checks/relations.py` is the checker; it used
+  * relations -- RAW, unverified. `graph/checks/relation_evidence.py` is the checker; it used
     to live in this package and verify its own proposals, which made relations the
     one field with no Resolution and no provenance.
   * merges -- RAW same-person (alias/nickname) claims, checked by
@@ -26,7 +26,7 @@ That was wrong on both counts, and the cost was visible in the output: every nam
 person in the sample transcripts inherited the speaker's ethnicity as an unchecked
 `inferred` guess from their name alone, and a priest addressed as "Father Nguyen"
 got `role: father` with nothing able to refute it. Both fields now have a rule
-layer in `graph/attributes.py` and checkers in `graph/checks/`.
+layer in `graph/rules/attributes.py` and checkers in `graph/checks/`.
 
 Nothing here touches `replace`. This module imports nothing from `graph`, so the
 one-way dependency (graph -> llm_layer) is preserved.
@@ -39,7 +39,7 @@ from collections import Counter, defaultdict
 _WINDOW_CHARS = 4000
 _ROLE_JUNK = {"unknown", "none", "n/a", ""}
 # Abbreviation-aware sentence segmentation. This is a deliberate mirror of
-# graph/sentences.py:sentence_spans -- llm_layer imports nothing from `graph`
+# graph/text/sentences.py:sentence_spans -- llm_layer imports nothing from `graph`
 # (one-way graph -> llm_layer dependency), so the small pure function is copied
 # here rather than imported. Keep the two in sync. Used by this module and by
 # identifier_judge (which imports `_sentences` from here).
@@ -180,7 +180,7 @@ def extract_pass(transcript: str, entities: list, interviewee, llm,
     """Run the windowed extraction.
 
     `subject_mask` is a same-length copy of the transcript with the interviewer's
-    speech masked out (`graph.turns.mask_to_subject`), passed in as a plain string
+    speech masked out (`graph.text.turns.mask_to_subject`), passed in as a plain string
     so this module still imports nothing from `graph`. It is used to decide whether
     a window contains any of the SPEAKER's own words -- a window that is entirely
     interviewer speech says nothing about P0. When omitted, every window counts as
@@ -191,7 +191,7 @@ def extract_pass(transcript: str, entities: list, interviewee, llm,
         given_name, surname, role and ethnicity, arbitrated by `graph.second_line`.
       * `relations` -- RAW relation proposals {source, target, detail, evidence,
         confidence}. Unverified: `graph.second_line` runs
-        `graph/checks/relations.py` over them as the `relation` field's checker.
+        `graph/checks/relation_evidence.py` over them as the `relation` field's checker.
       * `merges` -- RAW same-person (alias/nickname) claims {a, b, evidence,
         source, confidence}, checked by `graph/checks/merges.py`. Never applied
         automatically; a checked claim becomes a review flag.
@@ -420,9 +420,9 @@ def extract_pass(transcript: str, entities: list, interviewee, llm,
         merges.append({"a": ae.entity_id, "b": be.entity_id, "evidence": ev,
                        "source": "llm", "confidence": "unstated"})
 
-    # ---- relations -> RAW proposals, verified by graph/checks/relations.py -------
+    # ---- relations -> RAW proposals, verified by graph/checks/relation_evidence.py -------
     # This module no longer verifies its own relation proposals. Verification is a
-    # deterministic checker, so it moved to `graph/checks/relations.py` and runs
+    # deterministic checker, so it moved to `graph/checks/relation_evidence.py` and runs
     # behind the `relation` field in `graph.second_line` -- which is what gives
     # relations a Resolution, a provenance record and a row in the ledger, like
     # every other field.

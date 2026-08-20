@@ -27,9 +27,9 @@ with an empty `checks_passed` is visibly unverified.
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from ..sentences import sentence_spans
-from ..turns import (parse_turns, mask_to_subject, in_subject_turn, role_at,
-                     turn_bounds)
+from ..text.sentences import sentence_spans
+from ..text.turns import (parse_turns, mask_to_subject, in_subject_turn, role_at,
+                          turn_bounds)
 
 
 @dataclass(frozen=True)
@@ -73,7 +73,7 @@ class CheckContext:
     # a relation is about a PAIR, so it rides here the way `entity` does:
     # (source_entity_id, target_entity_id, evidence_quote)
     pair: tuple | None = None
-    relation_verdict: object = None      # set by checks.relationcheck
+    relation_verdict: object = None      # set by checks.relations
     # Entities that are no longer in `entities` but that a checker still has to be
     # able to resolve by id. A rule-applied alias/coref merge FOLDS one entity into
     # another and drops it from the list, so the `same_person` checkers -- which
@@ -100,7 +100,7 @@ class CheckContext:
     @property
     def turns(self) -> tuple:
         """Speaker turns, so a checker can tell the interviewee's words from the
-        interviewer's. Cached in `graph.turns` per transcript string."""
+        interviewer's. Cached in `graph.text.turns` per transcript string."""
         return parse_turns(self.transcript)
 
     @property

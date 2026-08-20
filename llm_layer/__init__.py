@@ -37,7 +37,7 @@ Each row is `field .... proposer <- the rule table it second-lines`:
   FAMILY / PROFESSIONAL subtype . openworld_propose <- kin edges / PROFESSIONAL_CONTEXT
   location type ................. openworld_propose <- gazetteer type
   location parent (-> LOCATED_IN) openworld_propose <- gazetteer parent
-  location replace .............. openworld_propose <- location_dates.infer_location_replace
+  location replace .............. openworld_propose <- rules/locations.infer_location_replace
   date resolved_value ........... openworld_propose <- dateutil / rel-date regex /
                                                        season + spoken-year parsing /
                                                        ANCHOR_EVENTS
@@ -46,7 +46,7 @@ Each row is `field .... proposer <- the rule table it second-lines`:
   approximate (incl. ANCHORS) ... openworld_propose <- the rule's own marker
   age value ..................... openworld_propose <- word-number / decade maps
   age replace ................... openworld_propose <- checks/ages.age_reading_refuted
-  age <-> date pairing .......... openworld_propose <- location_dates.age_date_constraints
+  age <-> date pairing .......... openworld_propose <- rules/ages.age_date_constraints
   identifier owner .............. identifier_judge_pass <- pipeline._link_interviewee_pii
   identifier kind + normalization identifier_judge_pass <- identifiers._normalize
   occupation identifying ........ identifier_judge_pass <- identifiers.COMMON_OCCUPATIONS
@@ -56,19 +56,19 @@ claim that clears every checker becomes a `suggested_merge_with` review flag, ne
 an automatic merge, because changing who the graph thinks exists is a human's call.
 
 Public API:
-  default_client / LLMClient   -- shared Ollama client + persistent cache (llm.py)
+  default_client / LLMClient   -- shared Ollama client + persistent cache (client.py)
   adjudicate_same_person      -- merge adjudication (merge_adjudicate.py)
   openworld_propose           -- per-entity proposer (openworld.py)
   extract_pass                -- windowed proposer + verified relations (extract.py)
   identifier_judge_pass       -- windowed identifier proposer (identifier_judge.py)
 """
 
-from .llm import LLMClient, default_client
+from .client import LLMClient, default_client
 from .merge_adjudicate import adjudicate_same_person
 from .openworld import openworld_propose
 from .extract import extract_pass
 from .identifier_judge import identifier_judge_pass
-from .interviewee_id import propose_interviewee
+from .interviewee import propose_interviewee
 
 __all__ = [
     "LLMClient", "default_client", "adjudicate_same_person",

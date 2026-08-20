@@ -21,7 +21,7 @@ other field:
   1. RULE      `rule_candidate` -- three closed, high-precision constructions
                  (speaker label, first-person self-introduction in a subject
                  turn, interviewer address in an interviewer turn).
-  2. LLM       `llm_layer.interviewee_id.propose_interviewee` reads the roster and
+  2. LLM       `llm_layer.interviewee.propose_interviewee` reads the roster and
                  names one id, or none.
   3. CHECKERS  `graph/checks/interviewee.py` gates whatever survives: the name
                  must actually appear as a self-reference in a SPEAKER turn or as
@@ -42,9 +42,9 @@ row like every other field.
 from __future__ import annotations
 import re
 
-from .merge_strings import normalize
-from .turns import (parse_turns, mask_to_subject, in_subject_turn,
-                    in_interviewer_turn, subject_labels, INTERVIEWER)
+from .name_matching import normalize
+from ..text.turns import (parse_turns, mask_to_subject, in_subject_turn,
+                          in_interviewer_turn, subject_labels, INTERVIEWER)
 
 # ---------------------------------------------------------------- constructions
 
@@ -62,7 +62,7 @@ _TITLE = (r"(?:Mr|Mrs|Ms|Miss|Mx|Dr|Prof|Professor|Rev|Reverend|Pastor|Father|"
 # (1) The speaker names themselves. Matched against SUBJECT turns only.
 #
 # `call(?:s|ed)?` and the perfect forms matter: "Boudreaux is what everybody's
-# CALLED me" is the construction `graph/interviewee.py`'s own docstring offers as
+# CALLED me" is the construction `graph/rules/interviewee.py`'s own docstring offers as
 # the reason the LLM layer exists, and bare `call\s+me` did not match it. Since
 # `checks/interviewee.named_in_self_reference_or_address` gates the LLM's answer
 # with THIS function, a construction missing here could not be recovered by the
@@ -126,10 +126,10 @@ def _sentence_around(transcript: str, pos: int) -> str:
     interviewer says "Ms. Reyes" in every other line still could not verify that the
     speaker is female.
 
-    `graph/sentences.py` has known about "ms." since it was written; this module just
+    `graph/text/sentences.py` has known about "ms." since it was written; this module just
     was not asking it.
     """
-    from .sentences import sentence_spans
+    from ..text.sentences import sentence_spans
     for s, e in sentence_spans(transcript):
         if s <= pos < e:
             return transcript[s:e]
@@ -285,7 +285,7 @@ def _name_parts(entity) -> tuple[str | None, str | None]:
     function `attributes.infer_person_attributes` uses, so the speaker's own name
     cannot be split differently from everybody else's. This was a second copy of
     the split, and it carried the same honorific mis-slotting bug."""
-    from .merge_strings import split_name_parts
+    from .name_matching import split_name_parts
     return split_name_parts(entity.sorted_mentions[0] if entity.sorted_mentions else "")
 
 
@@ -323,8 +323,8 @@ def resolve_interviewee_identity(transcript: str, persons: list, interviewee,
     lazily inside the function to keep `graph.interviewee` free of an import cycle
     with `graph.second_line`.
     """
-    from .second_line import POLICIES, second_line, apply_resolution, FILL, CONFIRM, KEEP
-    from .checks import CheckContext
+    from ..second_line import POLICIES, second_line, apply_resolution, FILL, CONFIRM, KEEP
+    from ..checks import CheckContext
 
     policy = POLICIES["interviewee_identity"]
     ctx = CheckContext(transcript=transcript, entities=list(persons),

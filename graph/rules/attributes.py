@@ -6,9 +6,9 @@ We accept None values if the value is unknown.
 
 from __future__ import annotations
 import re
-from .models import Edge, Entity, Relation
-from .merge_strings import split_name_parts
-from .turns import mask_to_subject
+from ..models import Edge, Entity, Relation
+from .name_matching import split_name_parts
+from ..text.turns import mask_to_subject
 
 
 # Names that should usually NOT be replaced (public figures give no PII about
@@ -94,7 +94,7 @@ def infer_interviewee_gender(transcript: str, interviewee: Entity) -> None:
     transcript, so an interviewer saying "I'm a mother myself" would have set the
     interviewee's gender -- and interview_002's interviewer opens with "I
     appreciate you having me out", which is first-person speech that is not the
-    subject's. `graph.turns.mask_to_subject` preserves offsets, so the evidence
+    subject's. `graph.text.turns.mask_to_subject` preserves offsets, so the evidence
     quote still points at real transcript text.
     """
     if interviewee.attributes.get("gender"):
@@ -134,9 +134,9 @@ def _honorific_address_gender(transcript: str, interviewee: Entity):
     `checks/gender.HONORIFIC_GENDER` with the checker that verifies this field, so
     the proposer and the verifier read the same evidence."""
     from .interviewee import ADDRESS_TITLED, _is_address
-    from .turns import parse_turns, in_interviewer_turn
-    from .checks.gender import honorific_gender
-    from .merge_strings import normalize
+    from ..text.turns import parse_turns, in_interviewer_turn
+    from ..checks.gender import honorific_gender
+    from .name_matching import normalize
 
     toks = set()
     for form in interviewee.sorted_mentions:
@@ -448,7 +448,7 @@ def infer_person_attributes(
         # longest name form usually contains the most complete name
         longest = ent.sorted_mentions[0] if ent.sorted_mentions else ""
 
-        # THE shared split (graph/merge_strings.py): titles and kinship words are
+        # THE shared split (graph/rules/name_matching.py): titles and kinship words are
         # stripped, the first/last real tokens become given/surname, and a lone
         # token left behind by an HONORIFIC is slotted as a SURNAME rather than a
         # given name. This function used to carry its own copy of the split, which
@@ -469,7 +469,7 @@ def infer_person_attributes(
             # error; over-redacting a celebrity is the safe one.
             #
             # This keep is PROVISIONAL: the closed PUBLIC_FIGURES list is not the
-            # sole authority. `replace` is arbitrated by graph/second_line.py with
+            # sole authority. `replace` is arbitrated by graph/second_line/ with
             # conflict_policy=safe_direction and unsafe=False, so the keep survives
             # only if the LLM also affirms a public figure AND the checkers in
             # graph/checks/persons.py find no personal signal; any disagreement

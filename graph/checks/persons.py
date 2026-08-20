@@ -4,7 +4,7 @@ FAMILY / PROFESSIONAL subtype.
 
 `replace` is the one field where the safe direction is asymmetric: keeping a name
 is the leak-prone move, redacting it is the harmless one. So the policy is
-`safe_direction` (see `graph/second_line.py`) and the checker on the KEEP
+`safe_direction` (see `graph/second_line/policies.py`) and the checker on the KEEP
 direction is strict -- `personal_signal_absent` reuses `attributes._personal_signal`,
 which the rules already compute, and refuses any keep for a name used personally.
 
@@ -26,7 +26,7 @@ two tests do.
 from __future__ import annotations
 import re
 from . import CheckOutcome, ok, fail, na
-from ..attributes import _personal_signal, PROFESSIONAL_CONTEXT
+from ..rules.attributes import _personal_signal, PROFESSIONAL_CONTEXT
 from ..models import Relation
 
 
@@ -84,7 +84,7 @@ def role_corroborated(value, ctx) -> CheckOutcome:
 
     import re
     from .comparators import _KIN_CANON
-    from .relwords import KIN_WORDS
+    from .relation_words import KIN_WORDS
 
     # A KINSHIP role is a RELATION to somebody, so the word has to be BOUND to this
     # person -- the same test `subtype_corroborated` applies to FAMILY. Proximity is
@@ -161,7 +161,7 @@ def _has_kin_edge(ctx) -> bool:
 # had to solve this exact ambiguity: the kin word must be followed by punctuation,
 # "and"/"who"/"whom", or end of text -- never by a verb continuing the sentence.
 def _kin_binding_re():
-    from ..kinship import KIN, _MOD
+    from ..rules.kinship import KIN, _MOD
     before = re.compile(rf"\b(?:my|our|his|her|their)\s+{_MOD}{KIN}[\s,]*$", re.I)
     after = re.compile(
         rf"^\s*,\s*(?:who\s+(?:is|was)\s+|who's\s+)?"

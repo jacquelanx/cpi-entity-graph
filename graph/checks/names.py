@@ -16,7 +16,7 @@ or kin word (no mis-slotting).
 from __future__ import annotations
 import re
 from . import CheckOutcome, ok, fail, na
-from ..merge_strings import KINSHIP_AND_TITLES, HONORIFIC_TITLES
+from ..rules.name_matching import KINSHIP_AND_TITLES, HONORIFIC_TITLES
 
 # Kin terms absent from the strip set but common in oral history. Listed here so
 # the CHECKER catches the mis-slotting even while the rule table stays as-is.
@@ -68,7 +68,7 @@ def part_not_a_titled_surname(value, ctx) -> CheckOutcome:
     """For the GIVEN-NAME slot only: a lone name token behind a form of address is a
     SURNAME, so it may not be proposed as a given name.
 
-    `merge_strings.split_name_parts` applies this reasoning on the rule side, but the
+    `name_matching.split_name_parts` applies this reasoning on the rule side, but the
     rule abstaining does not stop the model re-proposing the same mis-slot -- and the
     other three checkers cannot refuse it, because the token really is a token of the
     mention, really is not a title, and really is not a kin word. Verified: with the
@@ -81,7 +81,7 @@ def part_not_a_titled_surname(value, ctx) -> CheckOutcome:
     name = "part_not_a_titled_surname"
     if not value:
         return na(name, "no part claimed")
-    from ..merge_strings import HONORIFIC_TITLES, _TITLE_ONLY, _TITLE_OR_KIN
+    from ..rules.name_matching import HONORIFIC_TITLES, _TITLE_ONLY, _TITLE_OR_KIN
     titles = HONORIFIC_TITLES | _TITLE_ONLY | _TITLE_OR_KIN
     want = str(value).strip().lower()
     for form in getattr(ctx.entity, "sorted_mentions", []):

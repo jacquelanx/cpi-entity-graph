@@ -14,7 +14,7 @@ the source text. Four checkers, each guarding one direction:
   source_hedge_agrees        a hedge in or just before the span ("maybe", "about",
                              "-odd", "a few", a decade word) proves an estimate;
                              a full month-day-year date proves an exact one.
-  age_parser_agrees          re-runs `location_dates.parse_age_value` -- THE rule
+  age_parser_agrees          re-runs `rules/ages.parse_age_value` -- THE rule
                              parser -- and refuses a value that contradicts what
                              it says about the same span.
   relative_date_is_approx    a DATE_RELATIVE resolved against the interview date
@@ -101,7 +101,7 @@ def age_parser_agrees(value, ctx) -> CheckOutcome:
         return na(name, "not an age")
     if not isinstance(value, bool):
         return fail(name, f"{value!r} is not a boolean")
-    from ..location_dates import parse_age_value
+    from ..rules.ages import parse_age_value
     text = _span_text(ctx)
     parsed, approx = parse_age_value(text)
     if parsed is None:

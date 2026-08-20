@@ -9,7 +9,7 @@ just "Maria" stays unmerged and gets flagged for review.
 
 
 from __future__ import annotations
-from .models import Entity, Mention
+from ..models import Entity, Mention
 import re
 
 
@@ -193,7 +193,7 @@ def _llm_says_distinct(persons, uf, bare_root, cand_root, transcript, llm):
     else, so the one decision class the arbitration layer could not see was an LLM
     call inside the clustering rule. `merge_person_mentions` now emits a
     `same_person` record for it (see the module docstring in
-    `graph/second_line.py`).
+    `graph/second_line/`).
     """
     from llm_layer import adjudicate_same_person
     bare = Entity(entity_id="_bare", category="PERSON",

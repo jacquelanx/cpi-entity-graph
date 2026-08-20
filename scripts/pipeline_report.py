@@ -1,12 +1,11 @@
 """
 Build ONE self-contained HTML dashboard covering all sample transcripts.
 Run this dashboard with the following command:
-./venv/bin/python3 scripts/dashboard.py
+./venv/bin/python3 scripts/pipeline_report.py
 (Might take a minute to load)
 """
 
 from __future__ import annotations
-import importlib.util
 import os
 import sys
 import webbrowser
@@ -14,12 +13,12 @@ from html import escape
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(SCRIPTS.parent))
 
-from demo_utils import all_tids, load_case, REPO_ROOT
-import render
+from demo.cases import all_tids, load_case, REPO_ROOT
+from demo import render
 
-OUT = REPO_ROOT / "tests" / "pipeline_report.html"
+OUT = REPO_ROOT / "reports" / "pipeline_report.html"
 
 # short labels for the tabs
 TITLES = {
@@ -29,12 +28,11 @@ TITLES = {
 }
 
 
-"""Import scripts/eval.py so we can reuse its per-transcript scorer."""
+"""The per-transcript scorer. Imported lazily: `evaluation.config` reads
+KG_USE_LLM at import time, and this module sets it above."""
 def _load_eval():
-    spec = importlib.util.spec_from_file_location("kg_eval", SCRIPTS / "eval.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    from evaluation import scoring
+    return scoring
 
 
 def build():

@@ -14,9 +14,9 @@ last stage.
 """
 
 from __future__ import annotations
-from .models import Entity
-from .merge_strings import normalize
-from .sentences import sentence_spans
+from ..models import Entity
+from .name_matching import normalize
+from ..text.sentences import sentence_spans
 from llm_layer import adjudicate_same_person
 from fastcoref import FCoref
 
@@ -29,7 +29,7 @@ def _overlapping_entity(entities: list[Entity], start: int, end: int):
     return None
 
 
-"""(start, end) for each sentence (abbreviation-aware; see graph/sentences.py)."""
+"""(start, end) for each sentence (abbreviation-aware; see graph/text/sentences.py)."""
 def _sentence_bounds(transcript: str) -> list[tuple[int, int]]:
     return sentence_spans(transcript)
 
@@ -174,7 +174,7 @@ def apply_coref(transcript: str, person_entities: list[Entity], llm=None) -> tup
                     # LLM DECLINED. Keeping them apart is (almost always) the right
                     # call, but it is still an LLM decision that changed who the graph
                     # thinks exists, and it used to leave NO trace at all: no merge
-                    # record, no Resolution, no ledger row. `merge_strings` emits
+                    # record, no Resolution, no ledger row. `name_matching` emits
                     # paired rule/llm records for the exactly analogous containment
                     # veto, so this was the one class of LLM identity decision still
                     # outside the single arbitration point.

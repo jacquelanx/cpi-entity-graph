@@ -22,7 +22,7 @@ from __future__ import annotations
 from datetime import date as _date
 from . import CheckOutcome, ok, fail, na
 from .comparators import parse_iso, source_granularity
-from ..location_dates import ANCHOR_EVENTS, _strip_article
+from ..rules.dates import ANCHOR_EVENTS, _strip_article
 
 _MIN_YEAR = 1850
 _MAX_LIFESPAN_YEARS = 120
@@ -34,7 +34,7 @@ _MAX_LIFESPAN_YEARS = 120
 # is a valley of a few thousand people in 1972, and every one of them is findable.
 #
 # Membership forces the safe direction (replace) rather than asserting anything about
-# the date itself, which is the same shape `location_dates.AMBIGUOUS_BROAD_NAMES` uses
+# the date itself, which is the same shape `rules/locations.AMBIGUOUS_BROAD_NAMES` uses
 # for the identical problem on place names. `shiftable` is deliberately UNAFFECTED: a
 # local disaster still has one fixed calendar date and still constrains the shift, so
 # the timeline stays consistent while the phrase gets replaced.
@@ -53,7 +53,7 @@ def anchor_phrase_for(text: str) -> str:
 
     Article-insensitive and longest-first, so "hurricane katrina" wins over "katrina".
     Four call sites used to carry their own copy of this loop (two here, one in
-    `checks/approximate.py`, one in `location_dates.resolve_date_entity`), which is
+    `checks/approximate.py`, one in `rules/dates.resolve_date_entity`), which is
     exactly how the rule layer and a checker drift apart.
     """
     t = (text or "").lower()

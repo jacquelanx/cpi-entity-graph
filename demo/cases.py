@@ -1,5 +1,5 @@
 """
-Simulates a perfect detector from the gold annotations in tests/gold/*.json and
+Simulates a perfect detector from the gold annotations in samples/gold/*.json and
 runs the transcript through the real graph pipeline.
 """
 
@@ -16,13 +16,13 @@ if str(REPO_ROOT) not in sys.path:
 from graph.loader import resolve_overlaps, make_mentions
 from graph.pipeline import run_pipeline
 
-TESTS = REPO_ROOT / "tests"
+SAMPLES = REPO_ROOT / "samples"
 DATA_GAZ = REPO_ROOT / "data" / "gazetteer.csv"
 
 
 def all_tids():
     # every transcript present, count-agnostic (was hardcoded interview_001..005)
-    return sorted(p.stem for p in (TESTS / "transcripts").glob("*.txt"))
+    return sorted(p.stem for p in (SAMPLES / "transcripts").glob("*.txt"))
 
 
 """Turn gold surface forms into detections (a stand-in perfect detector)."""
@@ -56,8 +56,8 @@ def detections_from_gold(text: str, gold: dict):
 
 """Run the full pipeline on one transcript; return everything the demos need."""
 def load_case(tid: str, trace: bool = False) -> dict:
-    text = (TESTS / "transcripts" / f"{tid}.txt").read_text(encoding="utf-8")
-    gold = json.loads((TESTS / "gold" / f"{tid}.json").read_text(encoding="utf-8"))
+    text = (SAMPLES / "transcripts" / f"{tid}.txt").read_text(encoding="utf-8")
+    gold = json.loads((SAMPLES / "gold" / f"{tid}.json").read_text(encoding="utf-8"))
     dets = resolve_overlaps(detections_from_gold(text, gold))
     mentions = make_mentions(tid, dets)
     entities, edges, info = run_pipeline(

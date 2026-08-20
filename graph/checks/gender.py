@@ -14,9 +14,9 @@ the one thing we can prove -- a contradiction -- fatal.
 from __future__ import annotations
 import re
 from . import CheckOutcome, ok, fail, na
-from ..kinship import KINSHIP_GENDER
+from ..rules.kinship import KINSHIP_GENDER
 
-# Honorifics that carry gender. `merge_strings.HONORIFIC_TITLES` exists but was
+# Honorifics that carry gender. `name_matching.HONORIFIC_TITLES` exists but was
 # never mapped to gender; this is that mapping.
 HONORIFIC_GENDER = {
     "mr": "M", "mister": "M", "sir": "M", "father": "M", "fr": "M",
@@ -45,7 +45,7 @@ _SPOUSE_M = re.compile(r"\bmy\s+(?:husband|late\s+husband|ex-husband)\b", re.I)
 # the rule layer's own patterns AND the same subject-turn masking, so the checker
 # and the rule cannot disagree about either the pattern or who was speaking.
 def _self_described(transcript: str):
-    from ..attributes import _IV_SELF_F, _IV_SELF_M, _IV_CALLME_F, _IV_CALLME_M
+    from ..rules.attributes import _IV_SELF_F, _IV_SELF_M, _IV_CALLME_F, _IV_CALLME_M
     found = set()
     for rx, g in ((_IV_SELF_F, "F"), (_IV_CALLME_F, "F"),
                   (_IV_SELF_M, "M"), (_IV_CALLME_M, "M")):
@@ -115,7 +115,7 @@ _NOUN_RE = re.compile(r"\b(" + "|".join(_NOUN_GENDER) + r")\b", re.I)
 
 def _next_sentence(ctx, pos: int):
     """The sentence AFTER the one containing `pos`, clipped to the same turn."""
-    from ..turns import turn_bounds
+    from ..text.turns import turn_bounds
     _ts, te = turn_bounds(pos, ctx.turns)
     _s, e = ctx.sentence_bounds(pos)
     for a, b in ctx.sents:
@@ -212,9 +212,9 @@ def interviewee_honorific_address_agrees(value, ctx) -> CheckOutcome:
     sample transcripts leave the speaker unnamed, so this stays `na` there.
     """
     name = "interviewee_honorific_address"
-    from ..interviewee import ADDRESS_TITLED, _is_address
-    from ..turns import parse_turns, in_interviewer_turn
-    from ..merge_strings import normalize
+    from ..rules.interviewee import ADDRESS_TITLED, _is_address
+    from ..text.turns import parse_turns, in_interviewer_turn
+    from ..rules.name_matching import normalize
 
     iv = ctx.interviewee
     toks = set()

@@ -11,7 +11,7 @@ them, and that the LLM's alias pass missed it too -- the only visible trace was 
 clustering number one point lower than it should be.
 
 The analogue of the four-step pattern for a merge is the one the module header of
-`graph/second_line.py` names: rule proposes, LLM adjudicates, checkers confirm.
+`graph/second_line/` names: rule proposes, LLM adjudicates, checkers confirm.
 That is what these implement. A pair rides on `ctx.pair` the way a relation does
 (`(a_entity_id, b_entity_id, evidence_quote)`), and the value is the boolean
 "same person".
@@ -80,7 +80,7 @@ def _forms(ent, other=None):
 
 def _tokens(ent, other=None) -> set[str]:
     """Normalized name tokens (titles / kin words stripped) for one side."""
-    from ..merge_strings import normalize
+    from ..rules.name_matching import normalize
     toks: set[str] = set()
     for f in _forms(ent, other):
         toks |= set(normalize(f))
@@ -119,8 +119,8 @@ def _names_in(ent, text_lower: str, other=None) -> bool:
 
 def _alias_cue_re():
     """The closed alias-construction set the RULE layer owns, reused verbatim so
-    the checker and `graph/aliases.py` cannot disagree about what counts as a cue."""
-    from ..aliases import _CALL, _AS, _REAL, _BY, _NICK
+    the checker and `graph/rules/aliases.py` cannot disagree about what counts as a cue."""
+    from ..rules.aliases import _CALL, _AS, _REAL, _BY, _NICK
     return (_CALL, _AS, _REAL, _BY, _NICK)
 
 
@@ -236,7 +236,7 @@ def alias_cue_present(value, ctx) -> CheckOutcome:
 
 def genders_do_not_conflict(value, ctx) -> CheckOutcome:
     """One human has one gender. A conflict is a hard refutation -- the same
-    two-way signal `graph/coref.py` already treats as a hard block."""
+    two-way signal `graph/rules/coref.py` already treats as a hard block."""
     name = "genders_do_not_conflict"
     if value is not True:
         return na(name, "not a same-person claim")

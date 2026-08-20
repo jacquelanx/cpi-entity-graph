@@ -38,7 +38,7 @@ _NEAR = 80
 
 
 def _canon(value):
-    from ..attributes import normalize_ethnonym
+    from ..rules.attributes import normalize_ethnonym
     return normalize_ethnonym(value)
 
 
@@ -92,7 +92,7 @@ def attributed_to_this_person(value, ctx) -> CheckOutcome:
     iv = ctx.interviewee
 
     if ent is iv or getattr(ent, "entity_id", None) == getattr(iv, "entity_id", None):
-        from ..attributes import ethnicity_claims
+        from ..rules.attributes import ethnicity_claims
         spoken = ctx.subject_transcript
         if any(c == canon for c, _ev in ethnicity_claims(spoken)):
             return ok(name, "self-applied in the subject's own speech")
