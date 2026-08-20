@@ -7,6 +7,8 @@
       "Alma Reyes",
       "Ms. Reyes"
     ],
+    "given_name": "Alma",
+    "surname": "Reyes",
     "gender": "F",
     "ethnicity": "mexican",
     "dob": "1957-10-12",
@@ -20,6 +22,11 @@
       ],
       "gender": "M",
       "replace": true,
+      "subtype": "FAMILY",
+      "role": "father",
+      "given_name": "Salvador",
+      "surname": null,
+      "ethnicity": "mexican",
       "note": "father; introduced appositively ('My father, Salvador')"
     },
     {
@@ -30,6 +37,11 @@
       ],
       "gender": "F",
       "replace": true,
+      "subtype": "FAMILY",
+      "role": "mother",
+      "given_name": "Esperanza",
+      "surname": null,
+      "ethnicity": "mexican",
       "note": "mother; the alias is introduced with a PRONOUN subject ('everybody on the block called her Pera'), so the merge depends on resolving 'her' to the nearest preceding person of matching gender rather than on a shared name token"
     },
     {
@@ -39,6 +51,11 @@
       ],
       "gender": "M",
       "replace": true,
+      "subtype": "FAMILY",
+      "role": "brother",
+      "given_name": "Rafael",
+      "surname": null,
+      "ethnicity": "mexican",
       "note": "brother"
     },
     {
@@ -48,6 +65,11 @@
       ],
       "gender": "F",
       "replace": true,
+      "subtype": "FAMILY",
+      "role": "daughter",
+      "given_name": "Marisol",
+      "surname": null,
+      "ethnicity": "mexican",
       "note": "daughter; owns the parish social-media handle, so that identifier must NOT be attributed to the speaker"
     },
     {
@@ -57,6 +79,11 @@
       ],
       "gender": "M",
       "replace": false,
+      "subtype": "PUBLIC_FIGURE",
+      "role": "president",
+      "given_name": null,
+      "surname": "Reagan",
+      "ethnicity": null,
       "note": "public figure in PUBLIC_FIGURES, used impersonally ('Reagan was president when the layoffs started') -> keep. The keep still has to clear personal_signal_absent and not_kin_of_interviewee."
     }
   ],
@@ -88,6 +115,8 @@
       "category": "DATE_OF_BIRTH",
       "resolved": "1957-10-12",
       "tolerance_days": 0,
+      "shiftable": true,
+      "approximate": false,
       "owner": "interviewee",
       "replace": true,
       "note": "the SPEAKER'S OWN date of birth -- the single most consequential field for interviewee-only surrogate generation"
@@ -97,6 +126,8 @@
       "category": "DATE_ABSOLUTE",
       "resolved": "1948-01-01",
       "tolerance_days": 0,
+      "shiftable": true,
+      "approximate": true,
       "replace": true
     },
     {
@@ -104,6 +135,8 @@
       "category": "DATE_ABSOLUTE",
       "resolved": "1992-01-01",
       "tolerance_days": 0,
+      "shiftable": true,
+      "approximate": true,
       "replace": true
     },
     {
@@ -111,6 +144,8 @@
       "category": "DATE_ABSOLUTE",
       "resolved": "1981-01-01",
       "tolerance_days": 0,
+      "shiftable": true,
+      "approximate": true,
       "replace": true
     },
     {
@@ -118,6 +153,8 @@
       "category": "DATE_ANCHOR",
       "resolved": "2001-09-11",
       "tolerance_days": 0,
+      "shiftable": false,
+      "approximate": false,
       "replace": false,
       "note": "nationally known public event -> resolves from the anchor table, stays non-shiftable, and its phrase is kept: naming it identifies nobody"
     },
@@ -126,6 +163,8 @@
       "category": "DATE_RELATIVE",
       "resolved": "2013-06-15",
       "tolerance_days": 60,
+      "shiftable": true,
+      "approximate": true,
       "replace": true
     }
   ],
@@ -134,6 +173,8 @@
       "text": "nineteen",
       "value": 19,
       "tolerance": 0,
+      "approximate": false,
+      "stated_with": null,
       "owner": "interviewee",
       "replace": true
     },
@@ -141,6 +182,8 @@
       "text": "thirty-four",
       "value": 34,
       "tolerance": 0,
+      "approximate": false,
+      "stated_with": null,
       "owner": "interviewee",
       "replace": true
     },
@@ -148,6 +191,8 @@
       "text": "ninety-one",
       "value": 91,
       "tolerance": 0,
+      "approximate": false,
+      "stated_with": "a few years ago",
       "owner": "other",
       "replace": true,
       "note": "the mother's age; 'She was ninety-one' -- a third-person subject governs the span, so it must not be attributed to the speaker"
@@ -156,6 +201,8 @@
       "text": "his seventies",
       "value": 75,
       "tolerance": 5,
+      "approximate": true,
+      "stated_with": null,
       "owner": "other",
       "replace": true,
       "note": "the father's; a decade expression, so approximate"
@@ -166,14 +213,16 @@
       "text": "South Chicago",
       "in_gazetteer": false,
       "type": "neighborhood",
+      "parent": "Chicago",
       "replace": true
     },
     {
       "text": "Chicago",
       "in_gazetteer": true,
       "type": "city",
+      "parent": "Illinois",
       "replace": true,
-      "note": "in the gazetteer with Illinois as its parent, and both are mentioned -> the one LOCATED_IN edge in this transcript"
+      "note": "in the gazetteer with Illinois as its parent, and both are mentioned -> the Chicago->Illinois LOCATED_IN edge. The neighbourhood/street/institution parents below are the ones only the LLM layer can reach, since the gazetteer knows none of them."
     },
     {
       "text": "Illinois",
@@ -185,6 +234,7 @@
       "text": "Buffalo Avenue",
       "in_gazetteer": false,
       "type": "street",
+      "parent": "South Chicago",
       "replace": true,
       "note": "a street plus a birth date is a household"
     },
@@ -199,12 +249,14 @@
       "text": "Pilsen",
       "in_gazetteer": false,
       "type": "neighborhood",
+      "parent": "Chicago",
       "replace": true
     },
     {
       "text": "Saint Anthony Hospital",
       "in_gazetteer": false,
       "type": "institution",
+      "parent": "Chicago",
       "replace": true,
       "note": "a named employer is a direct pointer to a person; an institution is never keepable"
     }

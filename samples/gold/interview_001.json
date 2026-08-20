@@ -3,6 +3,8 @@
   "interview_date": "2015-04-18",
   "interviewee": {
     "identity": null,
+    "given_name": null,
+    "surname": null,
     "gender": "F",
     "ethnicity": "vietnamese",
     "dob": "1968-09-03",
@@ -16,6 +18,11 @@
       ],
       "gender": "M",
       "replace": true,
+      "subtype": "FAMILY",
+      "role": "father",
+      "given_name": "Bao",
+      "surname": null,
+      "ethnicity": "vietnamese",
       "note": "father"
     },
     {
@@ -25,6 +32,11 @@
       ],
       "gender": "F",
       "replace": true,
+      "subtype": "FAMILY",
+      "role": "mother",
+      "given_name": "Hoa",
+      "surname": null,
+      "ethnicity": "vietnamese",
       "note": "mother"
     },
     {
@@ -35,7 +47,12 @@
       ],
       "gender": "M",
       "replace": true,
-      "note": "brother; nickname introduced with 'ended up calling him Sonny'. The alias cue set matches call/called/calls/calling and the pronoun search skips the alias itself, so Minh + Sonny SHOULD merge."
+      "subtype": "FAMILY",
+      "role": "brother",
+      "given_name": "Minh",
+      "surname": null,
+      "ethnicity": "vietnamese",
+      "note": "brother; nickname introduced with 'ended up calling him Sonny'. The alias cue set matches call/called/calls/calling and the pronoun search skips the alias itself, so Minh + Sonny SHOULD merge. `given_name` is Minh: the nickname is not a given name, and the rule split takes the LONGEST form, which is 'Sonny'."
     },
     {
       "canonical": "Thao",
@@ -44,6 +61,11 @@
       ],
       "gender": "F",
       "replace": true,
+      "subtype": "FAMILY",
+      "role": "aunt",
+      "given_name": "Thao",
+      "surname": null,
+      "ethnicity": "vietnamese",
       "note": "aunt (mother's sister)"
     },
     {
@@ -53,6 +75,11 @@
       ],
       "gender": "M",
       "replace": true,
+      "subtype": "FAMILY",
+      "role": "uncle",
+      "given_name": "Hai",
+      "surname": null,
+      "ethnicity": "vietnamese",
       "note": "uncle; a second unrelated Hai appears with the SAME surface form -> not separable in a text-keyed schema, expected over-merge."
     },
     {
@@ -62,6 +89,11 @@
       ],
       "gender": "M",
       "replace": true,
+      "subtype": "FAMILY",
+      "role": "husband",
+      "given_name": "Duc",
+      "surname": null,
+      "ethnicity": "vietnamese",
       "note": "husband"
     },
     {
@@ -71,6 +103,11 @@
       ],
       "gender": "F",
       "replace": true,
+      "subtype": "FAMILY",
+      "role": "daughter",
+      "given_name": "Trang",
+      "surname": null,
+      "ethnicity": "vietnamese",
       "note": "daughter"
     },
     {
@@ -80,6 +117,11 @@
       ],
       "gender": "M",
       "replace": true,
+      "subtype": "FAMILY",
+      "role": "son",
+      "given_name": "Khanh",
+      "surname": null,
+      "ethnicity": "vietnamese",
       "note": "son"
     },
     {
@@ -90,6 +132,10 @@
       "gender": "M",
       "replace": true,
       "subtype": "PROFESSIONAL",
+      "role": "priest",
+      "given_name": null,
+      "surname": "Nguyen",
+      "ethnicity": "vietnamese",
       "note": "priest; surname collides with the family surname Nguyen"
     },
     {
@@ -99,7 +145,12 @@
       ],
       "gender": "M",
       "replace": true,
-      "note": "Cajun neighbor"
+      "subtype": null,
+      "role": null,
+      "given_name": null,
+      "surname": "Landry",
+      "ethnicity": "cajun",
+      "note": "the Cajun neighbour -- 'old Cajun families, the Landrys next door being the great exception'. Named as a neighbour, not as a relative and not for a job, so no subtype and no role are the right answers: 'Mr.' names no office and the transcript never applies an occupation noun to him."
     },
     {
       "canonical": "Ms. Boudreaux",
@@ -109,6 +160,10 @@
       "gender": "F",
       "replace": true,
       "subtype": "PROFESSIONAL",
+      "role": "caseworker",
+      "given_name": null,
+      "surname": "Boudreaux",
+      "ethnicity": null,
       "note": "diocese caseworker"
     },
     {
@@ -118,7 +173,12 @@
       ],
       "gender": "M",
       "replace": false,
-      "note": "public figure in PUBLIC_FIGURES -> keep. The keep is not automatic: `replace` resolves under safe_direction and must clear personal_signal_absent + not_kin_of_interviewee before a name survives."
+      "subtype": "PUBLIC_FIGURE",
+      "role": "president",
+      "given_name": null,
+      "surname": "Obama",
+      "ethnicity": null,
+      "note": "public figure in PUBLIC_FIGURES -> keep. The keep is not automatic: `replace` resolves under safe_direction and must clear personal_signal_absent + not_kin_of_interviewee before a name survives. 'Obama' alone is a SURNAME, which is what a surrogate has to replace it with."
     },
     {
       "canonical": "Governor Barbour",
@@ -127,6 +187,11 @@
       ],
       "gender": "M",
       "replace": false,
+      "subtype": "PUBLIC_FIGURE",
+      "role": "governor",
+      "given_name": null,
+      "surname": "Barbour",
+      "ethnicity": null,
       "note": "real public figure NOT in the list. The rules say replace, the model says keep, and the safe direction redacts -> an honest over-redaction."
     },
     {
@@ -136,6 +201,11 @@
       ],
       "gender": "M",
       "replace": false,
+      "subtype": "PUBLIC_FIGURE",
+      "role": null,
+      "given_name": "Anderson",
+      "surname": "Cooper",
+      "ethnicity": null,
       "note": "real public figure NOT in the list -> expected over-redaction, same as Governor Barbour."
     }
   ],
@@ -179,6 +249,24 @@
       "source": "INTERVIEWEE",
       "target": "Khanh",
       "detail": "son"
+    },
+    {
+      "source": "Hoa",
+      "target": "Thao",
+      "detail": "sister",
+      "note": "'My aunt Thao, my mother's sister, she came over in '81' -- stated outright. Both people are named, but the NAME PRECEDES the kin phrase, so no extract_kinship pattern reaches it: pattern 5 wants \"Hoa's sister Thao\", pattern 6 wants \"my mother's sister Thao\". A rules-only miss by construction."
+    },
+    {
+      "source": "Bao",
+      "target": "Hai",
+      "detail": "brother",
+      "note": "\"My uncle Hai -- that's my father's brother\", restated as 'One uncle Hai, my father's brother.' Same name-first phrasing as Hoa/Thao."
+    },
+    {
+      "source": "Khanh",
+      "target": "Hoa",
+      "detail": "grandmother",
+      "note": "'But he calls his grandmother every Sunday now' -- 'he' is Khanh and the only grandmother in the transcript is Hoa. Neither end is named at the relation site, so it needs coref on both."
     }
   ],
   "dates": [
@@ -187,6 +275,8 @@
       "category": "DATE_OF_BIRTH",
       "resolved": "1968-09-03",
       "tolerance_days": 0,
+      "shiftable": true,
+      "approximate": false,
       "owner": "interviewee",
       "replace": true
     },
@@ -195,22 +285,28 @@
       "category": "DATE_ABSOLUTE",
       "resolved": "1975-03-20",
       "tolerance_days": 45,
-      "note": "season + year. `parse_absolute_date` resolves a season to mid-season (1975-03-20) rather than falling through to January 1st.",
-      "replace": true
+      "shiftable": true,
+      "approximate": true,
+      "replace": true,
+      "note": "season + year. `parse_absolute_date` resolves a season to mid-season (1975-03-20) rather than falling through to January 1st."
     },
     {
       "text": "Saigon fell",
       "category": "DATE_ANCHOR",
       "resolved": "1975-04-30",
       "tolerance_days": 0,
-      "note": "'saigon fell' / 'fall of saigon' are in ANCHOR_EVENTS -> resolves. Kept unredacted: an internationally known event identifies nobody.",
-      "replace": false
+      "shiftable": false,
+      "approximate": false,
+      "replace": false,
+      "note": "'saigon fell' / 'fall of saigon' are in ANCHOR_EVENTS -> resolves. Kept unredacted: an internationally known event identifies nobody."
     },
     {
       "text": "Hurricane Katrina",
       "category": "DATE_ANCHOR",
       "resolved": "2005-08-29",
       "tolerance_days": 0,
+      "shiftable": false,
+      "approximate": false,
       "replace": false,
       "note": "national anchor -> resolves, and its phrase is kept."
     },
@@ -219,6 +315,8 @@
       "category": "DATE_ANCHOR",
       "resolved": "2010-04-20",
       "tolerance_days": 0,
+      "shiftable": false,
+      "approximate": false,
       "replace": false,
       "note": "national anchor -> resolves, and its phrase is kept."
     },
@@ -227,6 +325,8 @@
       "category": "DATE_RELATIVE",
       "resolved": "2009-04-18",
       "tolerance_days": 45,
+      "shiftable": true,
+      "approximate": true,
       "replace": true
     },
     {
@@ -234,14 +334,18 @@
       "category": "DATE_RELATIVE",
       "resolved": "2013-06-21",
       "tolerance_days": 90,
-      "note": "'back' rather than 'ago', season plural -> the RULE misses it; the second line fills it from the LLM only if the date checkers pass.",
-      "replace": true
+      "shiftable": true,
+      "approximate": true,
+      "replace": true,
+      "note": "'back' rather than 'ago', season plural -> the RULE misses it; the second line fills it from the LLM only if the date checkers pass."
     },
     {
       "text": "Last spring",
       "category": "DATE_RELATIVE",
       "resolved": "2015-03-20",
       "tolerance_days": 40,
+      "shiftable": true,
+      "approximate": true,
       "replace": true
     }
   ],
@@ -250,13 +354,21 @@
       "text": "seven",
       "value": 7,
       "tolerance": 0,
+      "approximate": false,
+      "stated_with": [
+        "spring of 1975",
+        "Saigon fell"
+      ],
       "owner": "interviewee",
-      "replace": true
+      "replace": true,
+      "note": "'The spring of 1975 ... When Saigon fell ... I was seven.' Either expression names the same moment, so either is a correct anchor. It sits THREE sentences from both, and the rule looks one sentence out -- so this is the pairing the date-shifter needs and the rule cannot reach."
     },
     {
       "text": "forty-something",
       "value": 45,
       "tolerance": 5,
+      "approximate": true,
+      "stated_with": null,
       "owner": "other",
       "replace": true
     },
@@ -264,6 +376,8 @@
       "text": "nineteen",
       "value": 19,
       "tolerance": 0,
+      "approximate": true,
+      "stated_with": null,
       "owner": "interviewee",
       "replace": true
     },
@@ -271,6 +385,8 @@
       "text": "twenty-three",
       "value": 23,
       "tolerance": 0,
+      "approximate": false,
+      "stated_with": null,
       "owner": "interviewee",
       "replace": true
     },
@@ -278,6 +394,8 @@
       "text": "twelve",
       "value": 12,
       "tolerance": 0,
+      "approximate": true,
+      "stated_with": "Hurricane Katrina",
       "owner": "other",
       "replace": true
     },
@@ -285,6 +403,8 @@
       "text": "sixteen",
       "value": 16,
       "tolerance": 0,
+      "approximate": false,
+      "stated_with": null,
       "owner": "other",
       "replace": true
     },
@@ -292,8 +412,17 @@
       "text": "her eighties",
       "value": 82,
       "tolerance": 5,
+      "approximate": true,
+      "stated_with": null,
       "owner": "other",
       "replace": true
+    },
+    {
+      "text": "twelve",
+      "context": "the water came up twelve feet",
+      "expect_flag": true,
+      "replace": false,
+      "note": "'the water came up twelve feet' -- a MEASUREMENT the detector types AGE. Nothing should resolve (expect_flag) and the phrase must survive: redacting a flood depth destroys narrative content and protects nobody. The only replace=false age in the corpus, so it is the only row that can falsify the age-redaction score. `context` disambiguates it from the other 'twelve' (Trang's age) two sentences later, since gold rows are keyed by surface text."
     }
   ],
   "locations": [
@@ -307,12 +436,14 @@
       "text": "Saigon",
       "in_gazetteer": false,
       "type": "city",
+      "parent": "Vietnam",
       "replace": true
     },
     {
       "text": "Mekong Delta",
       "in_gazetteer": false,
       "type": "region",
+      "parent": "Vietnam",
       "replace": false,
       "note": "a region of ~17M people, so keeping the name is safe. The pipeline OVER-REDACTS it: the gazetteer does not know it, no type word sits beside any mention, and `keep_rests_on_a_verified_type` refuses a keep resting on an uncorroborated LLM type."
     },
@@ -320,6 +451,7 @@
       "text": "Palawan",
       "in_gazetteer": false,
       "type": "region",
+      "parent": "Philippines",
       "replace": false,
       "note": "a province, not a city. The model types it 'city' -- wrong but harmless here, since any city-level type forces replace."
     },
@@ -339,12 +471,14 @@
       "text": "Bayou La Batre",
       "in_gazetteer": false,
       "type": "city",
+      "parent": "Alabama",
       "replace": true
     },
     {
       "text": "Mobile",
       "in_gazetteer": true,
       "type": "city",
+      "parent": "Alabama",
       "replace": true
     },
     {
@@ -357,6 +491,7 @@
       "text": "Our Lady of Fatima",
       "in_gazetteer": false,
       "type": "institution",
+      "parent": "Biloxi",
       "replace": true
     },
     {
